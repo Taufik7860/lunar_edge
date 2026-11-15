@@ -130,6 +130,8 @@ class GeometryEngine:
                 angular_radius_deg=sun_data["angular_radius_deg"],
                 angular_diameter_deg=sun_data["angular_diameter_deg"],
                 light_time_s=sun_data["light_time_s"],
+                sub_lat_deg=sun_data.get("sub_lat_deg"),
+                sub_lon_deg=sun_data.get("sub_lon_deg"),
             ),
             earth=BodyGeometry(
                 body="EARTH",
@@ -139,6 +141,8 @@ class GeometryEngine:
                 angular_radius_deg=earth_data["angular_radius_deg"],
                 angular_diameter_deg=earth_data["angular_diameter_deg"],
                 light_time_s=earth_data["light_time_s"],
+                sub_lat_deg=earth_data.get("sub_lat_deg"),
+                sub_lon_deg=earth_data.get("sub_lon_deg"),
             ),
             solar_incidence=SolarIncidence(
                 zenith_angle_deg=sol_inc["zenith_angle_deg"],
@@ -198,6 +202,28 @@ class GeometryEngine:
         )
 
         return samples, summary
+
+    def compute_libration_cycle(
+        self,
+        start_utc: str,
+        duration_days: float = 28.0,
+        step_days: float = 0.5,
+    ) -> List[dict]:
+        """
+        Compute the Earth optical and physical libration track across a full lunar nodal cycle.
+        Returns time series of sub-Earth latitude and longitude on the Moon.
+        """
+        start_et = self.spice.utc_to_et(start_utc)
+        total_seconds = duration_days * 86400.0
+        step_seconds = step_days * 86400.0
+        n_steps = int(np.ceil(total_seconds / step_seconds)) + 1
+        et_array = np.linspace(start_et, start_et + total_seconds, n_steps)
+
+        cycle = []
+        for et in et_array:
+            data = self.spice.compute_earth_libration(et)
+            cycle.append(data)
+        return cycle
 
 
 # Global singleton instance

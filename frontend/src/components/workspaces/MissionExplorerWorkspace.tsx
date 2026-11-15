@@ -13,6 +13,7 @@ interface MissionExplorerWorkspaceProps {
   onToggleLayer: (layer: keyof LayerSettings) => void;
   highlightAzimuth?: number | null;
   discoveredCandidates?: DiscoveredCandidate[];
+  epochGeometry?: any | null;
 }
 
 export const MissionExplorerWorkspace: React.FC<MissionExplorerWorkspaceProps> = ({
@@ -25,6 +26,7 @@ export const MissionExplorerWorkspace: React.FC<MissionExplorerWorkspaceProps> =
   onToggleLayer,
   highlightAzimuth,
   discoveredCandidates,
+  epochGeometry,
 }) => {
   return (
     <div className="relative w-full h-full flex flex-col bg-obsidian-950 overflow-hidden">
@@ -40,6 +42,7 @@ export const MissionExplorerWorkspace: React.FC<MissionExplorerWorkspaceProps> =
           onToggleLayer={onToggleLayer}
           highlightAzimuth={highlightAzimuth}
           discoveredCandidates={discoveredCandidates}
+          epochGeometry={epochGeometry}
         />
 
         {/* Candidate Selector Quick Strip at Bottom of 3D Canvas */}

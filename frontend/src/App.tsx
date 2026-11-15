@@ -24,6 +24,9 @@ import {
   GeographicBounds,
   DiscoveredCandidate,
   OpportunityDiscoveryResponse,
+  MissionEvaluationResponse,
+  ProbabilisticResilienceResponse,
+  CounterfactualRecoveryResponse,
 } from './types/api';
 import { AlertTriangle, Compass } from 'lucide-react';
 
@@ -76,6 +79,19 @@ export const App: React.FC = () => {
   const [envelope, setEnvelope] = useState<ContinuityEnvelopeResult | null>(null);
   const [epochGeometry, setEpochGeometry] = useState<EpochGeometry | null>(null);
 
+  // Master Scientific Mission Evaluation, Monte Carlo Resilience & Recovery State
+  const [missionEvaluation, setMissionEvaluation] = useState<MissionEvaluationResponse | null>(null);
+  const [resilienceResult, setResilienceResult] = useState<ProbabilisticResilienceResponse | null>(null);
+  const [recoveryResult, setRecoveryResult] = useState<CounterfactualRecoveryResponse | null>(null);
+  const [isLoadingEvaluation, setIsLoadingEvaluation] = useState<boolean>(false);
+  const [isLoadingResilience, setIsLoadingResilience] = useState<boolean>(false);
+  const [isLoadingRecovery, setIsLoadingRecovery] = useState<boolean>(false);
+
+  // Request ID counters to prevent out-of-order race conditions from asynchronous API responses
+  const analysisReqIdRef = React.useRef<number>(0);
+  const resilienceReqIdRef = React.useRef<number>(0);
+  const recoveryReqIdRef = React.useRef<number>(0);
+
   // Timeline Scrubber State
   const [currentSampleIndex, setCurrentSampleIndex] = useState<number>(0);
 
@@ -97,16 +113,8 @@ export const App: React.FC = () => {
 
   const [highlightAzimuth, setHighlightAzimuth] = useState<number | null>(null);
 
-  const toggleLayer = (layer: keyof LayerSettings) => {
+  const toggleLayer = useCallback((layer: keyof LayerSettings) => {
     setLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
-  };
-
-  // UTC clock ticker
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setUtcTime(new Date().toISOString().slice(11, 19));
-    }, 1000);
-    return () => clearInterval(timer);
   }, []);
 
   // Autonomous Opportunity Discovery Handler
@@ -171,11 +179,24 @@ export const App: React.FC = () => {
 
   // Run Mission Analysis when site or epoch changes
   const runAnalysis = useCallback(async (siteToEvaluate: LandingSite, epochStr: string) => {
+    const reqId = ++analysisReqIdRef.current;
     setLoading(true);
+    setIsLoadingEvaluation(true);
     setError(null);
+
+    // Immediately clear results belonging to the previous configuration to prevent showing stale data
+    setEpochGeometry(null);
+    setHorizon(null);
+    setVisibility(null);
+    setEnvelope(null);
+    setMissionEvaluation(null);
+    setResilienceResult(null);
+    setRecoveryResult(null);
+
     try {
       // 1. Fetch live epoch geometry
       const geom = await api.getEpochGeometry(siteToEvaluate, epochStr);
+      if (reqId !== analysisReqIdRef.current) return;
       setEpochGeometry(geom);
 
       // 2. Compute local terrain horizon & mission visibility timeline
@@ -183,20 +204,99 @@ export const App: React.FC = () => {
         api.getHorizon(siteToEvaluate, 20.0, 360),
         api.evaluateVisibility(siteToEvaluate, epochStr, durationDays, stepMinutes, 20.0),
       ]);
+      if (reqId !== analysisReqIdRef.current) return;
       setHorizon(hRes);
       setVisibility(vRes);
       setCurrentSampleIndex(0);
 
-      // 3. Compute Mission Continuity Envelope sensitivity
-      const eRes = await api.evaluateContinuityEnvelope(siteToEvaluate, epochStr, durationDays, 30.0, requirements);
+      // 3. Compute Mission Continuity Envelope sensitivity and Master Mission Evaluation
+      const [eRes, evalRes] = await Promise.all([
+        api.evaluateContinuityEnvelope(siteToEvaluate, epochStr, durationDays, 30.0, requirements),
+        api.evaluateMission(siteToEvaluate, epochStr, durationDays, stepMinutes, maxSlopeDeg, requirements, 20.0),
+      ]);
+      if (reqId !== analysisReqIdRef.current) return;
       setEnvelope(eRes);
+      setMissionEvaluation(evalRes);
+
+      // 4. Trigger Probabilistic Resilience Monte Carlo in background
+      const resReqId = ++resilienceReqIdRef.current;
+      setIsLoadingResilience(true);
+      api.evaluateResilience(siteToEvaluate, epochStr, durationDays, 30.0, maxSlopeDeg, requirements)
+        .then((rRes) => {
+          if (resReqId === resilienceReqIdRef.current && reqId === analysisReqIdRef.current) {
+            setResilienceResult(rRes);
+          }
+        })
+        .catch((err) => {
+          if (resReqId === resilienceReqIdRef.current) {
+            console.warn('Resilience evaluation warning:', err);
+          }
+        })
+        .finally(() => {
+          if (resReqId === resilienceReqIdRef.current) {
+            setIsLoadingResilience(false);
+          }
+        });
     } catch (err: any) {
-      console.error('Analysis execution failed:', err);
-      setError(`Scientific Analysis Alert: ${err.message || 'Unknown processing error'}`);
+      if (reqId === analysisReqIdRef.current) {
+        console.error('Analysis execution failed:', err);
+        setError(`Scientific Analysis Alert: ${err.message || 'Unknown processing error'}`);
+      }
     } finally {
-      setLoading(false);
+      if (reqId === analysisReqIdRef.current) {
+        setLoading(false);
+        setIsLoadingEvaluation(false);
+      }
     }
-  }, [durationDays, stepMinutes, requirements]);
+  }, [durationDays, stepMinutes, maxSlopeDeg, requirements]);
+
+  // Handlers for explicit Resilience and Recovery re-evaluation with race-condition prevention
+  const handleRunResilience = useCallback(async (siteToEvaluate: LandingSite = currentSite, epochStr: string = startUtc) => {
+    const resReqId = ++resilienceReqIdRef.current;
+    setIsLoadingResilience(true);
+    try {
+      const res = await api.evaluateResilience(siteToEvaluate, epochStr, durationDays, 30.0, maxSlopeDeg, requirements);
+      if (resReqId === resilienceReqIdRef.current) {
+        setResilienceResult(res);
+      }
+    } catch (err: any) {
+      if (resReqId === resilienceReqIdRef.current) {
+        console.error('Resilience calculation failed:', err);
+        setError(`Resilience Engine Alert: ${err.message || 'Failed to compute resilience'}`);
+      }
+    } finally {
+      if (resReqId === resilienceReqIdRef.current) {
+        setIsLoadingResilience(false);
+      }
+    }
+  }, [currentSite, startUtc, durationDays, maxSlopeDeg, requirements]);
+
+  const handleRunRecovery = useCallback(async (siteToEvaluate: LandingSite = currentSite, epochStr: string = startUtc) => {
+    const recReqId = ++recoveryReqIdRef.current;
+    setIsLoadingRecovery(true);
+    try {
+      const res = await api.planRecovery(siteToEvaluate, epochStr, durationDays, 30.0, maxSlopeDeg, requirements);
+      if (recReqId === recoveryReqIdRef.current) {
+        setRecoveryResult(res);
+      }
+    } catch (err: any) {
+      if (recReqId === recoveryReqIdRef.current) {
+        console.error('Counterfactual recovery failed:', err);
+        setError(`Recovery Engine Alert: ${err.message || 'Failed to compute recovery'}`);
+      }
+    } finally {
+      if (recReqId === recoveryReqIdRef.current) {
+        setIsLoadingRecovery(false);
+      }
+    }
+  }, [currentSite, startUtc, durationDays, maxSlopeDeg, requirements]);
+
+  // Auto-run Recovery when navigating to Recovery workspace if not yet evaluated
+  useEffect(() => {
+    if (activeWorkspace === 'recovery' && !recoveryResult && !isLoadingRecovery && currentSite) {
+      handleRunRecovery(currentSite, startUtc);
+    }
+  }, [activeWorkspace, recoveryResult, isLoadingRecovery, currentSite, startUtc, handleRunRecovery]);
 
   // Trigger analysis on site or startUtc changes
   useEffect(() => {
@@ -206,7 +306,7 @@ export const App: React.FC = () => {
   }, [currentSite, startUtc, runAnalysis]);
 
   // Handle Candidate Selection from 3D Globe, List, or Strip
-  const handleSelectSite = (key: string) => {
+  const handleSelectSite = useCallback((key: string) => {
     setSelectedSiteKey(key);
     // First check discovered candidates
     const foundDiscovered = discoveredCandidates.find((c) => c.key === key);
@@ -224,10 +324,10 @@ export const App: React.FC = () => {
     if (sites[key]) {
       setCurrentSite(sites[key]);
     }
-  };
+  }, [discoveredCandidates, sites]);
 
   // Handle Click on 3D Moon Surface to Query Live LOLA DEM Elevation
-  const handleCoordinatesClick = async (lat: number, lon: number) => {
+  const handleCoordinatesClick = useCallback(async (lat: number, lon: number) => {
     setIsLoadingElevation(true);
     setLastClickedCoord({ lat, lon });
     try {
@@ -247,7 +347,7 @@ export const App: React.FC = () => {
     } finally {
       setIsLoadingElevation(false);
     }
-  };
+  }, []);
 
   return (
     <div className="flex flex-col w-screen h-screen bg-obsidian-950 text-slate-100 overflow-hidden font-sans">
@@ -308,6 +408,7 @@ export const App: React.FC = () => {
                 onToggleLayer={toggleLayer}
                 highlightAzimuth={highlightAzimuth}
                 discoveredCandidates={discoveredCandidates}
+                epochGeometry={epochGeometry}
               />
             )}
 
@@ -354,6 +455,9 @@ export const App: React.FC = () => {
               <MissionResilienceWorkspace
                 site={currentSite}
                 envelope={envelope}
+                resilienceResult={resilienceResult}
+                isLoadingResilience={isLoadingResilience}
+                onRunResilience={() => handleRunResilience(currentSite, startUtc)}
                 requirements={requirements}
                 onChangeRequirements={setRequirements}
                 onReevaluate={() => runAnalysis(currentSite, startUtc)}
@@ -364,6 +468,10 @@ export const App: React.FC = () => {
               <MissionRecoveryWorkspace
                 site={currentSite}
                 visibility={visibility}
+                missionEvaluation={missionEvaluation}
+                recoveryResult={recoveryResult}
+                isLoadingRecovery={isLoadingRecovery}
+                onRunRecovery={() => handleRunRecovery(currentSite, startUtc)}
                 requirements={requirements}
               />
             )}
@@ -386,6 +494,8 @@ export const App: React.FC = () => {
           epochGeometry={epochGeometry}
           visibility={visibility}
           horizon={horizon}
+          missionEvaluation={missionEvaluation}
+          isLoadingEvaluation={isLoadingEvaluation}
           requirements={requirements}
           onUpdateRequirements={setRequirements}
           isLoadingElevation={isLoadingElevation}

@@ -21,6 +21,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
+from app.utils.date_utils import parse_and_normalize_utc, normalize_to_iso_utc
 from app.engines.geometry_engine import GeometryEngine
 from app.engines.horizon_engine import compute_horizon_profile
 from app.engines.terrain_engine import TerrainEngine
@@ -30,7 +31,9 @@ from app.models.schemas import (
     MissionRequirements,
     PerturbedEvaluation,
     ContinuityEnvelopeResult,
+    ContinuityMetrics,
     VisibilitySummary,
+    VisibilityTimeSeriesResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,94 @@ class ContinuityEngine:
     def __init__(self, terrain_engine: Optional[TerrainEngine] = None, geometry_engine: Optional[GeometryEngine] = None):
         self.terrain_engine = terrain_engine or TerrainEngine()
         self.geometry_engine = geometry_engine or GeometryEngine()
+
+    @staticmethod
+    def compute_continuity_metrics(vis_response: VisibilityTimeSeriesResponse) -> ContinuityMetrics:
+        """
+        Calculates comprehensive continuity and window metrics from a visibility time series.
+        Explicitly differentiates cumulative totals from continuous unbroken windows,
+        and quantifies temporal quantization uncertainty bounds (+/- dt).
+        """
+        summary = vis_response.summary
+        samples = vis_response.samples
+        
+        total_mission_hours = summary.duration_days * 24.0
+        dt_hours = summary.step_minutes / 60.0
+        uncertainty_hours = dt_hours  # Maximum window duration quantization uncertainty bound
+
+        # Count state transitions across contiguous discrete samples
+        d2n = 0
+        n2d = 0
+        comms_acq = 0
+        comms_lost = 0
+        simul_acq = 0
+        simul_lost = 0
+
+        for i in range(len(samples) - 1):
+            s_curr = samples[i]
+            s_next = samples[i + 1]
+
+            # Sun illumination transitions
+            if s_curr.is_sunlit and not s_next.is_sunlit:
+                d2n += 1
+            elif not s_curr.is_sunlit and s_next.is_sunlit:
+                n2d += 1
+
+            # Earth comms line-of-sight transitions
+            if not s_curr.is_earth_visible and s_next.is_earth_visible:
+                comms_acq += 1
+            elif s_curr.is_earth_visible and not s_next.is_earth_visible:
+                comms_lost += 1
+
+            # Simultaneous power + comms transitions
+            if not s_curr.is_simultaneous_operating and s_next.is_simultaneous_operating:
+                simul_acq += 1
+            elif s_curr.is_simultaneous_operating and not s_next.is_simultaneous_operating:
+                simul_lost += 1
+
+        sun_pct = round((summary.sunlit_hours / max(total_mission_hours, 1e-6)) * 100.0, 2)
+        earth_pct = round((summary.earth_visible_hours / max(total_mission_hours, 1e-6)) * 100.0, 2)
+        simul_pct = round((summary.simultaneous_hours / max(total_mission_hours, 1e-6)) * 100.0, 2)
+
+        explanation = (
+            f"Mission duration: {summary.duration_days:.1f} days ({total_mission_hours:.1f} h) sampled at "
+            f"{summary.step_minutes:.1f}-min resolution (temporal quantization uncertainty +/-{uncertainty_hours:.2f} h). "
+            f"Total sunlight received: {summary.sunlit_hours:.1f} h ({sun_pct}%), with the longest unbroken "
+            f"sunlit window lasting {summary.longest_sunlit_window_hours:.1f} h across {d2n} sunset transitions. "
+            f"Longest continuous darkness period is {summary.longest_dark_period_hours:.1f} h. "
+            f"Direct Earth line-of-sight is available for {summary.earth_visible_hours:.1f} h ({earth_pct}%), "
+            f"with a maximum continuous comms window of {summary.longest_earth_visible_window_hours:.1f} h "
+            f"and blackout period of {summary.longest_earth_blackout_hours:.1f} h across {comms_lost} occultation events. "
+            f"Simultaneous power and comms coincide for {summary.simultaneous_hours:.1f} h ({simul_pct}%), "
+            f"yielding a maximum continuous operating window of {summary.longest_simultaneous_window_hours:.1f} h."
+        )
+
+        return ContinuityMetrics(
+            site_name=summary.site_name,
+            start_utc=summary.start_utc,
+            duration_days=summary.duration_days,
+            step_minutes=summary.step_minutes,
+            total_mission_hours=round(total_mission_hours, 2),
+            temporal_uncertainty_hours=round(uncertainty_hours, 3),
+            total_sunlight_hours=summary.sunlit_hours,
+            sunlight_availability_pct=sun_pct,
+            longest_continuous_illumination_hours=summary.longest_sunlit_window_hours,
+            longest_continuous_darkness_hours=summary.longest_dark_period_hours,
+            total_earth_visibility_hours=summary.earth_visible_hours,
+            earth_visibility_pct=earth_pct,
+            longest_continuous_earth_visibility_hours=summary.longest_earth_visible_window_hours,
+            longest_continuous_earth_blackout_hours=summary.longest_earth_blackout_hours,
+            total_simultaneous_hours=summary.simultaneous_hours,
+            simultaneous_availability_pct=simul_pct,
+            longest_continuous_simultaneous_hours=summary.longest_simultaneous_window_hours,
+            day_to_night_transitions=d2n,
+            night_to_day_transitions=n2d,
+            comms_acquired_transitions=comms_acq,
+            comms_lost_transitions=comms_lost,
+            simultaneous_acquired_transitions=simul_acq,
+            simultaneous_lost_transitions=simul_lost,
+            explanation=explanation,
+        )
 
     def evaluate_continuity_envelope(
         self,
@@ -65,21 +156,23 @@ class ContinuityEngine:
             duration_days: Mission duration in days
             step_minutes: Geometry calculation time step in minutes
             requirements: Thresholds for power, battery, and comms success
-            spatial_radii_m: Dispersion distances to test (defaults to [50, 150, 250] meters)
-            temporal_offsets_days: Launch slippage offsets in days (defaults to [-3, -1, 1, 3])
+            spatial_radii_m: Dispersion distances to test (defaults to [100, 250] meters)
+            temporal_offsets_days: Launch slippage offsets in days (defaults to [-2, -1, 1, 2])
         """
         reqs = requirements or MissionRequirements()
         radii = spatial_radii_m if spatial_radii_m is not None else [100.0, 250.0]
         slippages = temporal_offsets_days if temporal_offsets_days is not None else [-2.0, -1.0, 1.0, 2.0]
 
         # 1. Baseline Evaluation
-        baseline_summary, baseline_passes, baseline_reasons = self._evaluate_single_configuration(
+        baseline_vis, baseline_passes, baseline_reasons = self._evaluate_single_configuration(
             site=site,
             start_utc=start_utc,
             duration_days=duration_days,
             step_minutes=step_minutes,
             reqs=reqs,
         )
+        baseline_summary = baseline_vis.summary
+        baseline_metrics = self.compute_continuity_metrics(baseline_vis)
 
         perturbations: List[PerturbedEvaluation] = []
         spatial_results: List[bool] = []
@@ -110,29 +203,36 @@ class ContinuityEngine:
                 pert_y = obs_y + dy
                 pert_lat, pert_lon = self.terrain_engine.polar_stereo_to_selenographic(pert_x, pert_y)
                 
-                # Query actual LOLA DEM elevation at displaced touchdown location
-                try:
-                    pert_elev = float(self.terrain_engine.get_elevation(pert_lat, pert_lon))
-                except Exception:
-                    pert_elev = site.elevation_m
+                # Query actual LOLA DEM elevation, slope, and aspect at displaced touchdown location
+                elev_val, elev_status, _ = self.terrain_engine.get_elevation_safe(pert_lat, pert_lon)
+                pert_elev = float(elev_val) if elev_status == "EVALUATED" and elev_val is not None else site.elevation_m
 
-                # Perturbed site
+                pt_slope, pt_aspect, sa_status, _ = self.terrain_engine.compute_point_slope_aspect_safe(pert_lat, pert_lon)
+                if sa_status == "EVALUATED" and pt_slope is not None:
+                    pert_slope = float(pt_slope)
+                    pert_aspect = float(pt_aspect) if pt_aspect is not None else site.aspect_deg
+                else:
+                    pert_slope = site.slope_deg
+                    pert_aspect = site.aspect_deg
+
+                # Perturbed site with real local terrain parameters
                 pert_site = LandingSite(
                     name=f"{site.name} ({dir_name} {int(r)}m)",
                     latitude_deg=pert_lat,
                     longitude_deg=pert_lon,
                     elevation_m=pert_elev,
-                    slope_deg=site.slope_deg,
-                    aspect_deg=site.aspect_deg,
+                    slope_deg=pert_slope,
+                    aspect_deg=pert_aspect,
                 )
 
-                summary, passes, reasons = self._evaluate_single_configuration(
+                pert_vis, passes, reasons = self._evaluate_single_configuration(
                     site=pert_site,
                     start_utc=start_utc,
                     duration_days=duration_days,
                     step_minutes=step_minutes,
                     reqs=reqs,
                 )
+                summary = pert_vis.summary
 
                 spatial_results.append(passes)
                 perturbations.append(
@@ -156,19 +256,20 @@ class ContinuityEngine:
                 )
 
         # 3. Temporal Perturbations (Date Slippage)
-        base_dt = datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+        base_dt = parse_and_normalize_utc(start_utc)
 
         for slip in slippages:
             pert_dt = base_dt + timedelta(days=slip)
-            pert_utc = pert_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            pert_utc = normalize_to_iso_utc(pert_dt)
 
-            summary, passes, reasons = self._evaluate_single_configuration(
+            pert_vis, passes, reasons = self._evaluate_single_configuration(
                 site=site,
                 start_utc=pert_utc,
                 duration_days=duration_days,
                 step_minutes=step_minutes,
                 reqs=reqs,
             )
+            summary = pert_vis.summary
 
             temporal_results.append(passes)
             perturbations.append(
@@ -206,6 +307,7 @@ class ContinuityEngine:
             spatial_success_rate=round(spatial_rate, 4),
             temporal_success_rate=round(temporal_rate, 4),
             overall_robustness_score=round(overall_score, 4),
+            baseline_continuity_metrics=baseline_metrics,
         )
 
     def _evaluate_single_configuration(
@@ -215,7 +317,7 @@ class ContinuityEngine:
         duration_days: float,
         step_minutes: float,
         reqs: MissionRequirements,
-    ) -> Tuple[VisibilitySummary, bool, List[str]]:
+    ) -> Tuple[VisibilityTimeSeriesResponse, bool, List[str]]:
         """Evaluates geometry + terrain horizon + visibility for one specific config."""
         # A. Ephemeris geometry time-series
         geo_samples, _ = self.geometry_engine.compute_mission_window_time_series(
@@ -269,4 +371,4 @@ class ContinuityEngine:
             )
 
         meets_reqs = (len(reasons) == 0)
-        return summary, meets_reqs, reasons
+        return vis_resp, meets_reqs, reasons

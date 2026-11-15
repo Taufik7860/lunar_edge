@@ -29,6 +29,7 @@ interface LunarGlobeCanvasProps {
   highlightAzimuth?: number | null;
   cameraMode?: 'global' | 'south_pole' | 'ortho' | 'site';
   discoveredCandidates?: DiscoveredCandidate[];
+  epochGeometry?: any | null;
 }
 
 const getClassificationColor = (classification?: string): number => {
@@ -53,6 +54,56 @@ const getClassificationColor = (classification?: string): number => {
   }
 };
 
+/**
+ * Generates an instant high-fidelity procedural canvas texture of the Moon.
+ * Used as an immediate guarantee so the Moon never renders black under texture loading delays.
+ */
+function createFallbackLunarTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    // Base lunar highland regolith (realistic cool grey)
+    ctx.fillStyle = '#b8bec8';
+    ctx.fillRect(0, 0, 1024, 512);
+
+    // Lunar maria (dark basaltic volcanic plains)
+    ctx.fillStyle = '#5c6470';
+    ctx.beginPath();
+    ctx.ellipse(320, 220, 120, 80, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(450, 200, 70, 70, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(540, 240, 60, 60, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(600, 270, 45, 45, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(640, 200, 40, 40, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // South polar crater relief stippling
+    ctx.fillStyle = '#8e96a4';
+    for (let i = 0; i < 400; i++) {
+      const x = Math.random() * 1024;
+      const y = 340 + Math.random() * 172;
+      const r = 2 + Math.random() * 8;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
   sites,
   selectedSiteKey,
@@ -63,11 +114,27 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
   onToggleLayer,
   highlightAzimuth,
   discoveredCandidates,
+  epochGeometry,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const moonGroupRef = useRef<THREE.Group | null>(null);
+  const sitesGroupRef = useRef<THREE.Group | null>(null);
+  const moonMeshRef = useRef<THREE.Mesh | null>(null);
+  const sunLightRef = useRef<THREE.DirectionalLight | null>(null);
+  const sunRayRef = useRef<THREE.Line | null>(null);
+  const earthRayRef = useRef<THREE.Line | null>(null);
+
+  // Keep latest mutable props in refs so callbacks & loops never tear down the WebGL canvas
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
+  const onSelectSiteRef = useRef(onSelectSite);
+  onSelectSiteRef.current = onSelectSite;
+  const onCoordinatesClickRef = useRef(onCoordinatesClick);
+  onCoordinatesClickRef.current = onCoordinatesClick;
+
   const controlsRef = useRef<{
     targetPos: THREE.Vector3;
     currentPos: THREE.Vector3;
@@ -86,12 +153,12 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     isDragging: false,
     prevMouseX: 0,
     prevMouseY: 0,
-    rotationX: 1.1, // tilt to show South Pole by default
+    rotationX: 1.15, // Tilt to look into the South Pole craters by default
     rotationY: 0.2,
-    targetRotationX: 1.1,
+    targetRotationX: 1.15,
     targetRotationY: 0.2,
-    zoom: 2.2,
-    targetZoom: 2.2,
+    zoom: 2.1,
+    targetZoom: 2.1,
   });
 
   const [activeCameraView, setActiveCameraView] = useState<'global' | 'south_pole' | 'ortho' | 'site'>('south_pole');
@@ -100,11 +167,6 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
   const [isLayerMenuOpen, setIsLayerMenuOpen] = useState(false);
 
   // Convert Selenographic (lat, lon) on unit sphere to 3D Cartesian
-  // In our Three.js Moon:
-  // South pole is at -Y [0, -1, 0]
-  // North pole is at +Y [0, 1, 0]
-  // Prime meridian (0° lon) is along +Z [0, 0, 1]
-  // 90° East longitude is along +X [1, 0, 0]
   const latLonToVector3 = useCallback((latDeg: number, lonDeg: number, radius = 1.0) => {
     const latRad = THREE.MathUtils.degToRad(latDeg);
     const lonRad = THREE.MathUtils.degToRad(lonDeg);
@@ -123,99 +185,16 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     return { lat: latDeg, lon: lonDeg };
   }, []);
 
-  // Build high-resolution realistic lunar procedural texture
-  const createLunarTexture = useCallback(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 2048;
-    canvas.height = 1024;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return new THREE.CanvasTexture(canvas);
-
-    // Base highlands regolith grey
-    ctx.fillStyle = '#6e747d';
-    ctx.fillRect(0, 0, 2048, 1024);
-
-    // Multi-scale procedural cratering & mare noise
-    // 1. Maria (dark basaltic lowlands)
-    const maria = [
-      { x: 500, y: 350, rx: 240, ry: 180, col: '#3a3e46' }, // Oceanus Procellarum
-      { x: 800, y: 300, rx: 180, ry: 140, col: '#33373f' }, // Mare Imbrium
-      { x: 1050, y: 340, rx: 140, ry: 120, col: '#383c44' }, // Mare Serenitatis
-      { x: 1200, y: 380, rx: 150, ry: 130, col: '#363a41' }, // Mare Tranquillitatis
-      { x: 1350, y: 440, rx: 110, ry: 100, col: '#393d45' }, // Mare Fecunditatis
-      { x: 1350, y: 300, rx: 100, ry: 90, col: '#32363e' }, // Mare Crisium
-    ];
-
-    maria.forEach((m) => {
-      const grad = ctx.createRadialGradient(m.x, m.y, 10, m.x, m.y, Math.max(m.rx, m.ry));
-      grad.addColorStop(0, m.col);
-      grad.addColorStop(0.7, m.col);
-      grad.addColorStop(1, 'transparent');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.ellipse(m.x, m.y, m.rx, m.ry, 0, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    // 2. Fine cratering stippling
-    ctx.fillStyle = '#26292f';
-    for (let i = 0; i < 4000; i++) {
-      const x = Math.random() * 2048;
-      const y = Math.random() * 1024;
-      const r = Math.random() * 3 + 0.5;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // 3. Bright rayed impact craters (Tycho, Copernicus)
-    const rayCraters = [
-      { x: 750, y: 680, r: 16, rayCount: 18, rayLen: 320 }, // Tycho in southern highlands
-      { x: 720, y: 380, r: 12, rayCount: 14, rayLen: 220 }, // Copernicus
-      { x: 600, y: 340, r: 9, rayCount: 10, rayLen: 160 }, // Kepler
-    ];
-
-    rayCraters.forEach((c) => {
-      ctx.strokeStyle = 'rgba(235, 240, 250, 0.22)';
-      ctx.lineWidth = 1.2;
-      for (let a = 0; a < c.rayCount; a++) {
-        const angle = (a * (Math.PI * 2)) / c.rayCount + (Math.random() - 0.5) * 0.2;
-        const len = c.rayLen * (0.6 + Math.random() * 0.8);
-        ctx.beginPath();
-        ctx.moveTo(c.x, c.y);
-        ctx.lineTo(c.x + Math.cos(angle) * len, c.y + Math.sin(angle) * len);
-        ctx.stroke();
-      }
-      ctx.fillStyle = '#f1f5f9';
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#334155';
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.r * 0.5, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    // 4. Polar Crater Rim Shading at South Pole (bottom rows: y from 850 to 1024)
-    // Shackleton, Faustini, Shoemaker, Haworth, Nobile, Amundsen
-    ctx.fillStyle = 'rgba(20, 24, 32, 0.45)';
-    ctx.fillRect(0, 880, 2048, 144);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    return texture;
-  }, []);
-
-  // Main Three.js Setup & Lifecycle
+  // ---------------------------------------------------------------------------
+  // 1. One-Time Three.js Mount Lifecycle (Runs once; never tears down canvas)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
 
-    // Scene, Camera, Renderer
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
@@ -223,11 +202,16 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     camera.position.set(0, 0, 2.5);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: 'high-performance',
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.25;
+
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
@@ -251,42 +235,47 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     const stars = new THREE.Points(starsGeo, starsMat);
     scene.add(stars);
 
-    // Group holding the Moon and all attached lunar surface features
+    // Group holding the Moon and attached surface geometries
     const moonGroup = new THREE.Group();
+    moonGroupRef.current = moonGroup;
     scene.add(moonGroup);
 
-    // 1. Lunar Globe Sphere
-    const moonGeo = new THREE.SphereGeometry(1.0, 96, 96);
-    const moonTex = createLunarTexture();
+    // 1. Lunar Globe Sphere with authentic NASA LRO/LOLA photographic & bump texture
+    const fallbackTex = createFallbackLunarTexture();
+    const textureLoader = new THREE.TextureLoader();
+
+    const moonGeo = new THREE.SphereGeometry(1.0, 128, 128);
     const moonMat = new THREE.MeshStandardMaterial({
-      map: moonTex,
-      roughness: 0.92,
-      metalness: 0.04,
-      bumpScale: 0.008,
+      color: 0xd4d4d8,
+      map: fallbackTex,
+      bumpMap: fallbackTex,
+      bumpScale: 0.006, // Realistic tactile crater depth and mountain relief
+      roughness: 0.82,
+      metalness: 0.02,
     });
     const moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    moonMesh.name = 'moon_sphere';
+    moonMeshRef.current = moonMesh;
     moonGroup.add(moonMesh);
 
-    // 2. High-Resolution South Polar Cap Relief Mesh (Detailed LOLA Topography)
-    // Detailed polar circle down to -80° latitude
-    const polarCapGeo = new THREE.CircleGeometry(0.35, 64);
-    // Orient to South Pole (-Y)
-    polarCapGeo.rotateX(Math.PI / 2);
-    polarCapGeo.translate(0, -0.992, 0);
+    // Load authentic NASA 2K photographic texture asynchronously
+    textureLoader.load(
+      '/textures/moon_2k.jpg',
+      (tex) => {
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        moonMat.map = tex;
+        moonMat.bumpMap = tex;
+        moonMat.needsUpdate = true;
+      },
+      undefined,
+      (err) => {
+        console.warn('LRO 2K texture load notice, using high-res fallback regolith texture:', err);
+      }
+    );
 
-    const polarCapMat = new THREE.MeshStandardMaterial({
-      color: 0x475569,
-      roughness: 0.95,
-      metalness: 0.05,
-      transparent: true,
-      opacity: layers.highResSouthPoleMesh ? 0.85 : 0.0,
-      wireframe: layers.elevationHeatmap,
-    });
-    const polarCapMesh = new THREE.Mesh(polarCapGeo, polarCapMat);
-    polarCapMesh.name = 'polar_cap';
-    moonGroup.add(polarCapMesh);
-
-    // 3. Polar Latitude Rings (-80°, -84°, -87°, -89°)
+    // 2. Polar Latitude Rings (-80°, -84°, -87°, -89°)
     const latRingsGroup = new THREE.Group();
     latRingsGroup.name = 'lat_rings';
     const ringLats = [-80, -84, -87, -89];
@@ -310,7 +299,7 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     });
     moonGroup.add(latRingsGroup);
 
-    // 4. Prime Meridian Marker (Sub-Earth Meridian 0°)
+    // 3. Prime Meridian Marker (Sub-Earth Meridian 0°)
     const primeMeridianCurve = [];
     for (let lat = -90; lat <= 90; lat += 2) {
       primeMeridianCurve.push(latLonToVector3(lat, 0, 1.003));
@@ -321,55 +310,235 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     pmLine.name = 'prime_meridian';
     moonGroup.add(pmLine);
 
-    // 5. Sun Direction Vector Ray & Solar Illuminator
-    // In our SPICE geometry for July 2026, Sun is in the north (+1.28° lat)
-    const sunDir = new THREE.Vector3(0.8, 0.05, 0.6).normalize();
-    const sunLight = new THREE.DirectionalLight(0xfffbeb, 2.6);
+    // 4. Sun Direction Vector Ray & Solar Directional Light
+    const sunDir = new THREE.Vector3(1.2, 0.45, 0.85).normalize();
+    const sunLight = new THREE.DirectionalLight(0xfffdf2, 2.6);
     sunLight.position.copy(sunDir.clone().multiplyScalar(15));
+    sunLightRef.current = sunLight;
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x0a101d, 0.35);
+    // Realistic Lunar Illumination:
+    // A. Ambient light provides realistic base visibility so the dark side is never crushed to pitch black
+    const ambientLight = new THREE.AmbientLight(0x94a3b8, 0.42);
     scene.add(ambientLight);
 
-    // Sun Ray Visualizer
+    // B. Hemisphere light gives soft directional gradient between sky and space ground
+    const hemiLight = new THREE.HemisphereLight(0xe2e8f0, 0x1e293b, 0.65);
+    scene.add(hemiLight);
+
+    // C. Earthshine fill light (simulating Earth's albedo reflection onto lunar near-side and pole)
+    const earthshineLight = new THREE.DirectionalLight(0x7dd3fc, 0.45);
+    earthshineLight.position.set(-10, -5, 8);
+    scene.add(earthshineLight);
+
     const sunRayGeo = new THREE.BufferGeometry().setFromPoints([
       sunDir.clone().multiplyScalar(1.05),
-      sunDir.clone().multiplyScalar(3.2),
+      sunDir.clone().multiplyScalar(3.0),
     ]);
-    const sunRayMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.7 });
+    const sunRayMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.8 });
     const sunRayLine = new THREE.Line(sunRayGeo, sunRayMat);
     sunRayLine.name = 'sun_ray';
+    sunRayRef.current = sunRayLine;
     scene.add(sunRayLine);
 
-    // 6. Earth Direction Vector Ray & Libration Line of Sight
-    // Earth is centered near [0, 0, 1] with ~6.7° libration
+    // 5. Earth Direction Vector Ray
     const earthDir = new THREE.Vector3(0.08, 0.05, 1.0).normalize();
     const earthRayGeo = new THREE.BufferGeometry().setFromPoints([
       earthDir.clone().multiplyScalar(1.05),
-      earthDir.clone().multiplyScalar(3.2),
+      earthDir.clone().multiplyScalar(3.0),
     ]);
-    const earthRayMat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.7 });
+    const earthRayMat = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.75 });
     const earthRayLine = new THREE.Line(earthRayGeo, earthRayMat);
     earthRayLine.name = 'earth_ray';
+    earthRayRef.current = earthRayLine;
     scene.add(earthRayLine);
 
-    // 7. Candidate Landing Site Markers & Spatial Regions
+    // 6. Sites Group attached to moonGroup
     const sitesGroup = new THREE.Group();
     sitesGroup.name = 'sites_group';
+    sitesGroupRef.current = sitesGroup;
+    moonGroup.add(sitesGroup);
 
-    // If discovered candidates are available from the autonomous search engine, render actual spatial boundaries
+    // Event Handlers for Drag, Orbit, Zoom and Clicks
+    const ctrl = controlsRef.current;
+
+    const onMouseDown = (e: MouseEvent) => {
+      ctrl.isDragging = true;
+      ctrl.prevMouseX = e.clientX;
+      ctrl.prevMouseY = e.clientY;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(mouseX, mouseY), camera);
+
+      if (sitesGroupRef.current) {
+        const candHits = raycaster.intersectObjects(sitesGroupRef.current.children, true);
+        const hit = candHits.find((h) => h.object.userData?.siteKey);
+        if (hit && hit.object.userData) {
+          setHoveredCandidate(hit.object.userData.candidate || hit.object.userData.site || null);
+        } else {
+          setHoveredCandidate(null);
+        }
+      }
+
+      const intersects = raycaster.intersectObject(moonMesh);
+      if (intersects.length > 0) {
+        const localPoint = moonGroup.worldToLocal(intersects[0].point.clone());
+        const { lat, lon } = vector3ToLatLon(localPoint);
+        setHoveredCoordinate({ lat, lon });
+      } else {
+        setHoveredCoordinate(null);
+      }
+
+      if (!ctrl.isDragging) return;
+      const deltaX = e.clientX - ctrl.prevMouseX;
+      const deltaY = e.clientY - ctrl.prevMouseY;
+
+      ctrl.targetRotationY += deltaX * 0.006;
+      ctrl.targetRotationX += deltaY * 0.006;
+      ctrl.targetRotationX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 + 0.5, ctrl.targetRotationX));
+
+      ctrl.prevMouseX = e.clientX;
+      ctrl.prevMouseY = e.clientY;
+    };
+
+    const onMouseUp = () => {
+      ctrl.isDragging = false;
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      ctrl.targetZoom += e.deltaY * 0.0015;
+      ctrl.targetZoom = Math.max(1.3, Math.min(5.5, ctrl.targetZoom));
+    };
+
+    const onClick = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(mouseX, mouseY), camera);
+
+      if (sitesGroupRef.current) {
+        const pinHits = raycaster.intersectObjects(sitesGroupRef.current.children, true);
+        if (pinHits.length > 0) {
+          const hit = pinHits.find((h) => h.object.userData?.siteKey);
+          if (hit && hit.object.userData.siteKey) {
+            const key = hit.object.userData.siteKey;
+            onSelectSiteRef.current(key);
+            const cand = hit.object.userData.candidate || hit.object.userData.site;
+            if (cand) {
+              const lat = cand.latitude_deg ?? cand.latitude;
+              const lon = cand.longitude_deg ?? cand.longitude;
+              ctrl.targetRotationX = THREE.MathUtils.degToRad(-lat);
+              ctrl.targetRotationY = THREE.MathUtils.degToRad(-lon);
+              ctrl.targetZoom = 1.65;
+              setActiveCameraView('site');
+            }
+            return;
+          }
+        }
+      }
+
+      const intersects = raycaster.intersectObject(moonMesh);
+      if (intersects.length > 0) {
+        const localPoint = moonGroup.worldToLocal(intersects[0].point.clone());
+        const { lat, lon } = vector3ToLatLon(localPoint);
+        if (onCoordinatesClickRef.current) {
+          onCoordinatesClickRef.current(lat, lon);
+        }
+      }
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    container.addEventListener('wheel', onWheel, { passive: false });
+    container.addEventListener('click', onClick);
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (!container || !camera || !renderer) return;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    });
+    resizeObserver.observe(container);
+
+    // Continuous 60 FPS Animation Render Loop
+    let animId: number;
+    const animate = () => {
+      animId = requestAnimationFrame(animate);
+
+      // Smooth camera damping
+      ctrl.rotationX += (ctrl.targetRotationX - ctrl.rotationX) * 0.12;
+      ctrl.rotationY += (ctrl.targetRotationY - ctrl.rotationY) * 0.12;
+      ctrl.zoom += (ctrl.targetZoom - ctrl.zoom) * 0.12;
+
+      moonGroup.rotation.x = ctrl.rotationX;
+      moonGroup.rotation.y = ctrl.rotationY;
+      camera.position.z = ctrl.zoom;
+
+      // Dynamic Layer visibility checks (read from layersRef, zero DOM updates)
+      const curLayers = layersRef.current;
+      const rings = moonGroup.getObjectByName('lat_rings');
+      if (rings) rings.visible = curLayers.coordinateGrid;
+
+      const pm = moonGroup.getObjectByName('prime_meridian');
+      if (pm) pm.visible = curLayers.coordinateGrid;
+
+      if (sunRayRef.current) sunRayRef.current.visible = curLayers.sunDirectionVector;
+      if (earthRayRef.current) earthRayRef.current.visible = curLayers.earthDirectionVector;
+      if (sitesGroupRef.current) sitesGroupRef.current.visible = curLayers.candidateRegions;
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      resizeObserver.disconnect();
+      container.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('click', onClick);
+      renderer.dispose();
+    };
+  }, [latLonToVector3, vector3ToLatLon]);
+
+  // ---------------------------------------------------------------------------
+  // 2. Candidate Markers & Spatial Boundaries Rebuild (Updates in-place, NO blinking)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const sitesGroup = sitesGroupRef.current;
+    if (!sitesGroup) return;
+
+    // Remove existing markers without touching the WebGL scene or moon sphere
+    while (sitesGroup.children.length > 0) {
+      const child = sitesGroup.children[0];
+      sitesGroup.remove(child);
+      if ((child as any).geometry) (child as any).geometry.dispose();
+    }
+
     if (discoveredCandidates && discoveredCandidates.length > 0) {
       discoveredCandidates.forEach((cand: DiscoveredCandidate) => {
         const isSelected = cand.key === selectedSiteKey;
         const color = getClassificationColor(cand.classification);
         const centerPos = latLonToVector3(cand.latitude_deg, cand.longitude_deg, 1.008);
 
-        // A. Draw spatial boundary polygon and filled translucent surface cap
+        // A. Boundary contour line and filled translucent surface cap
         if (cand.boundary_polygon && cand.boundary_polygon.length >= 3) {
           const boundaryPts = cand.boundary_polygon.map((pt: number[]) =>
             latLonToVector3(pt[0], pt[1], isSelected ? 1.009 : 1.006)
           );
-          // 1. Boundary Contour Line
           const boundaryGeo = new THREE.BufferGeometry().setFromPoints(boundaryPts);
           const boundaryMat = new THREE.LineBasicMaterial({
             color: isSelected ? 0x00e5ff : color,
@@ -381,7 +550,7 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
           boundaryLine.userData = { siteKey: cand.key, candidate: cand };
           sitesGroup.add(boundaryLine);
 
-          // 2. Translucent Filled Spherical Surface Cap
+          // Translucent filled surface patch
           const triPositions: number[] = [];
           const center = latLonToVector3(cand.latitude_deg, cand.longitude_deg, 1.004);
           for (let i = 0; i < boundaryPts.length; i++) {
@@ -397,7 +566,7 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
           const fillMat = new THREE.MeshBasicMaterial({
             color: color,
             transparent: true,
-            opacity: isSelected ? 0.35 : 0.20,
+            opacity: isSelected ? 0.35 : 0.18,
             side: THREE.DoubleSide,
             depthWrite: false,
           });
@@ -432,7 +601,7 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
         }
       });
     } else {
-      // Fallback to configured sites dictionary
+      // Fallback to configured sites catalog
       Object.entries(sites).forEach(([key, site]) => {
         const isSelected = key === selectedSiteKey;
         const pos = latLonToVector3(site.latitude_deg, site.longitude_deg, 1.008);
@@ -459,196 +628,33 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
         sitesGroup.add(ringMesh);
       });
     }
-    moonGroup.add(sitesGroup);
+  }, [sites, discoveredCandidates, selectedSiteKey, latLonToVector3]);
 
-    // 8. Touchdown Dispersion Footprint Ellipse for Active Candidate
-    if (layers.dispersionFootprint && currentSite) {
-      const centerPos = latLonToVector3(currentSite.latitude_deg, currentSite.longitude_deg, 1.012);
-      const ellipseCurve = new THREE.EllipseCurve(0, 0, 0.045, 0.025, 0, 2 * Math.PI, false, 0);
-      const ellipsePts = ellipseCurve.getPoints(48);
-      const ellipseGeo = new THREE.BufferGeometry().setFromPoints(
-        ellipsePts.map((p) => new THREE.Vector3(p.x, p.y, 0))
-      );
-      ellipseGeo.lookAt(centerPos);
-      const ellipseMat = new THREE.LineBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.85 });
-      const ellipseLine = new THREE.Line(ellipseGeo, ellipseMat);
-      ellipseLine.position.copy(centerPos);
-      ellipseLine.name = 'dispersion_ellipse';
-      moonGroup.add(ellipseLine);
+  // ---------------------------------------------------------------------------
+  // 3. Smooth Camera Auto-Focus when selected site updates
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (currentSite) {
+      const latRad = THREE.MathUtils.degToRad(currentSite.latitude_deg);
+      const lonRad = THREE.MathUtils.degToRad(currentSite.longitude_deg);
+      const ctrl = controlsRef.current;
+      ctrl.targetRotationX = -latRad;
+      ctrl.targetRotationY = -lonRad;
+      ctrl.targetZoom = 1.65;
+      setActiveCameraView('site');
     }
+  }, [selectedSiteKey, currentSite]);
 
-    // Interactive Drag and Zoom Event Handlers
-    const ctrl = controlsRef.current;
-
-    const onMouseDown = (e: MouseEvent) => {
-      ctrl.isDragging = true;
-      ctrl.prevMouseX = e.clientX;
-      ctrl.prevMouseY = e.clientY;
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      const mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      // Raycast to find hovered lat/lon
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(mouseX, mouseY), camera);
-
-      // Check if hovering candidate region or pin
-      const candHits = raycaster.intersectObjects(sitesGroup.children, true);
-      const hit = candHits.find((h) => h.object.userData?.siteKey);
-      if (hit && hit.object.userData) {
-        setHoveredCandidate(hit.object.userData.candidate || hit.object.userData.site || null);
-      } else {
-        setHoveredCandidate(null);
-      }
-
-      const intersects = raycaster.intersectObject(moonMesh);
-      if (intersects.length > 0) {
-        const localPoint = moonGroup.worldToLocal(intersects[0].point.clone());
-        const { lat, lon } = vector3ToLatLon(localPoint);
-        setHoveredCoordinate({ lat, lon });
-      } else {
-        setHoveredCoordinate(null);
-      }
-
-      if (!ctrl.isDragging) return;
-      const deltaX = e.clientX - ctrl.prevMouseX;
-      const deltaY = e.clientY - ctrl.prevMouseY;
-
-      ctrl.targetRotationY += deltaX * 0.006;
-      ctrl.targetRotationX += deltaY * 0.006;
-      // Clamp vertical tilt to avoid flipping
-      ctrl.targetRotationX = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 + 0.5, ctrl.targetRotationX));
-
-      ctrl.prevMouseX = e.clientX;
-      ctrl.prevMouseY = e.clientY;
-    };
-
-    const onMouseUp = () => {
-      ctrl.isDragging = false;
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      ctrl.targetZoom += e.deltaY * 0.0015;
-      ctrl.targetZoom = Math.max(1.3, Math.min(5.5, ctrl.targetZoom));
-    };
-
-    const onClick = (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      const mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(mouseX, mouseY), camera);
-
-      // Check if clicked on a candidate pin or spatial boundary
-      const pinHits = raycaster.intersectObjects(sitesGroup.children, true);
-      if (pinHits.length > 0) {
-        const hit = pinHits.find((h) => h.object.userData?.siteKey);
-        if (hit && hit.object.userData.siteKey) {
-          const key = hit.object.userData.siteKey;
-          onSelectSite(key);
-          const cand = hit.object.userData.candidate || hit.object.userData.site;
-          if (cand) {
-            const lat = cand.latitude_deg ?? cand.latitude;
-            const lon = cand.longitude_deg ?? cand.longitude;
-            ctrl.targetRotationX = THREE.MathUtils.degToRad(-lat);
-            ctrl.targetRotationY = THREE.MathUtils.degToRad(-lon);
-            ctrl.targetZoom = 1.6;
-            setActiveCameraView('site');
-          }
-          return;
-        }
-      }
-
-      // Check if clicked on moon surface for custom coordinate inspection
-      const intersects = raycaster.intersectObject(moonMesh);
-      if (intersects.length > 0) {
-        const localPoint = moonGroup.worldToLocal(intersects[0].point.clone());
-        const { lat, lon } = vector3ToLatLon(localPoint);
-        if (onCoordinatesClick) {
-          onCoordinatesClick(lat, lon);
-        }
-      }
-    };
-
-    container.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    container.addEventListener('wheel', onWheel, { passive: false });
-    container.addEventListener('click', onClick);
-
-    // Resize Observer
-    const resizeObserver = new ResizeObserver(() => {
-      if (!container || !camera || !renderer) return;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    });
-    resizeObserver.observe(container);
-
-    // Animation Loop
-    let animId: number;
-    const animate = () => {
-      animId = requestAnimationFrame(animate);
-
-      // Smooth damping of rotation and zoom
-      ctrl.rotationX += (ctrl.targetRotationX - ctrl.rotationX) * 0.12;
-      ctrl.rotationY += (ctrl.targetRotationY - ctrl.rotationY) * 0.12;
-      ctrl.zoom += (ctrl.targetZoom - ctrl.zoom) * 0.12;
-
-      moonGroup.rotation.x = ctrl.rotationX;
-      moonGroup.rotation.y = ctrl.rotationY;
-      camera.position.z = ctrl.zoom;
-
-      // Update layer visibility
-      const polarCap = moonGroup.getObjectByName('polar_cap') as THREE.Mesh | undefined;
-      if (polarCap && polarCap.material instanceof THREE.MeshStandardMaterial) {
-        polarCap.material.opacity = layers.highResSouthPoleMesh ? 0.85 : 0.0;
-        polarCap.material.wireframe = layers.elevationHeatmap;
-      }
-
-      const rings = moonGroup.getObjectByName('lat_rings');
-      if (rings) rings.visible = layers.coordinateGrid;
-
-      const pm = moonGroup.getObjectByName('prime_meridian');
-      if (pm) pm.visible = layers.coordinateGrid;
-
-      const sunL = scene.getObjectByName('sun_ray');
-      if (sunL) sunL.visible = layers.sunDirectionVector;
-
-      const earthL = scene.getObjectByName('earth_ray');
-      if (earthL) earthL.visible = layers.earthDirectionVector;
-
-      renderer.render(scene, camera);
-    };
-    animate();
-
-    return () => {
-      cancelAnimationFrame(animId);
-      resizeObserver.disconnect();
-      container.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      container.removeEventListener('wheel', onWheel);
-      container.removeEventListener('click', onClick);
-      renderer.dispose();
-    };
-  }, [sites, selectedSiteKey, layers, latLonToVector3, vector3ToLatLon, createLunarTexture, onSelectSite, onCoordinatesClick, currentSite]);
-
-  // Handle Preset Camera Views
+  // ---------------------------------------------------------------------------
+  // 4. Camera View Presets
+  // ---------------------------------------------------------------------------
   const setCameraPreset = (mode: 'global' | 'south_pole' | 'ortho' | 'site') => {
     setActiveCameraView(mode);
     const ctrl = controlsRef.current;
     if (mode === 'global') {
       ctrl.targetRotationX = 0.1;
       ctrl.targetRotationY = 0.0;
-      ctrl.targetZoom = 3.8;
+      ctrl.targetZoom = 3.6;
     } else if (mode === 'south_pole') {
       ctrl.targetRotationX = 1.15; // 66° tilt looking into southern craters
       ctrl.targetRotationY = 0.3;
@@ -656,14 +662,13 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
     } else if (mode === 'ortho') {
       ctrl.targetRotationX = Math.PI / 2; // 90° straight down at South Pole
       ctrl.targetRotationY = 0.0;
-      ctrl.targetZoom = 1.7;
+      ctrl.targetZoom = 1.65;
     } else if (mode === 'site' && currentSite) {
-      // Focus on active candidate coordinates
       const latRad = THREE.MathUtils.degToRad(currentSite.latitude_deg);
       const lonRad = THREE.MathUtils.degToRad(currentSite.longitude_deg);
       ctrl.targetRotationX = -latRad;
       ctrl.targetRotationY = -lonRad;
-      ctrl.targetZoom = 1.5;
+      ctrl.targetZoom = 1.65;
     }
   };
 
@@ -688,233 +693,88 @@ export const LunarGlobeCanvas: React.FC<LunarGlobeCanvasProps> = ({
             <span>Infeasible</span>
           </div>
           <div className="flex items-center space-x-2 text-slate-300">
-            <span className="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
             <span>Insufficient Data</span>
           </div>
         </div>
       </div>
 
-      {/* Top Right: Vertical Zoom Controls & Center Crosshair */}
-      <div className="absolute top-4 right-4 z-10 flex flex-col items-end space-y-2 pointer-events-auto">
-        {/* Zoom In / Zoom Out vertical pill */}
-        <div className="bg-obsidian-900/90 border border-slate-800 rounded-lg flex flex-col backdrop-blur-md shadow-aerospace overflow-hidden">
-          <button
-            onClick={() => {
-              const ctrl = controlsRef.current;
-              ctrl.targetZoom = Math.max(1.3, ctrl.targetZoom - 0.4);
-            }}
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 transition text-sm font-bold flex items-center justify-center border-b border-slate-800"
-            title="Zoom In"
-          >
-            +
-          </button>
-          <button
-            onClick={() => {
-              const ctrl = controlsRef.current;
-              ctrl.targetZoom = Math.min(5.5, ctrl.targetZoom + 0.4);
-            }}
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 transition text-sm font-bold flex items-center justify-center"
-            title="Zoom Out"
-          >
-            −
-          </button>
-        </div>
-
-        {/* Center Target Crosshair Button */}
+      {/* Top Right: Camera Zoom & Recenter HUD Controls */}
+      <div className="absolute top-4 right-4 z-10 flex flex-col space-y-1.5 pointer-events-auto">
         <button
-          onClick={() => setCameraPreset('site')}
-          className="p-2 bg-obsidian-900/90 border border-slate-800 hover:border-cyan-500/50 text-slate-300 hover:text-cyan-300 rounded-lg backdrop-blur-md shadow-aerospace transition"
-          title="Recenter on Selected Candidate"
+          onClick={() => {
+            const ctrl = controlsRef.current;
+            ctrl.targetZoom = Math.max(1.3, ctrl.targetZoom - 0.35);
+          }}
+          className="w-8 h-8 rounded bg-obsidian-900/90 border border-slate-800 text-slate-200 hover:text-white hover:bg-slate-800 flex items-center justify-center font-bold text-sm shadow-aerospace transition"
+          title="Zoom In (+)"
+        >
+          +
+        </button>
+        <button
+          onClick={() => {
+            const ctrl = controlsRef.current;
+            ctrl.targetZoom = Math.min(5.5, ctrl.targetZoom + 0.35);
+          }}
+          className="w-8 h-8 rounded bg-obsidian-900/90 border border-slate-800 text-slate-200 hover:text-white hover:bg-slate-800 flex items-center justify-center font-bold text-sm shadow-aerospace transition"
+          title="Zoom Out (−)"
+        >
+          −
+        </button>
+        <button
+          onClick={() => setCameraPreset('south_pole')}
+          className="w-8 h-8 rounded bg-obsidian-900/90 border border-slate-800 text-slate-200 hover:text-cyan-400 hover:bg-slate-800 flex items-center justify-center shadow-aerospace transition"
+          title="Reset South Pole View"
         >
           <Crosshair className="w-4 h-4" />
         </button>
-
-        {/* Scientific Overlays Dropdown Trigger */}
-        <div className="relative">
-          <button
-            onClick={() => setIsLayerMenuOpen(!isLayerMenuOpen)}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-mono flex items-center space-x-1.5 transition-colors backdrop-blur-md ${
-              isLayerMenuOpen
-                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300'
-                : 'bg-obsidian-900/90 border-slate-800 text-slate-300 hover:text-white'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            <span>LAYERS</span>
-          </button>
-
-          {isLayerMenuOpen && (
-            <div className="absolute right-0 mt-2 w-64 bg-obsidian-900/95 border border-slate-700/80 rounded-md p-3 shadow-2xl backdrop-blur-lg z-20 text-xs font-mono space-y-2.5">
-              <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider pb-1 border-b border-slate-800">
-                SCIENTIFIC OVERLAYS
-              </div>
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer hover:text-white">
-                <span className="flex items-center space-x-2">
-                  <Compass className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Coordinate Grid Rings</span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.coordinateGrid}
-                  onChange={() => onToggleLayer('coordinateGrid')}
-                  className="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0"
-                />
-              </label>
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer hover:text-white">
-                <span className="flex items-center space-x-2">
-                  <Maximize2 className="w-3.5 h-3.5 text-slate-400" />
-                  <span>LOLA Elevation Mesh</span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.highResSouthPoleMesh}
-                  onChange={() => onToggleLayer('highResSouthPoleMesh')}
-                  className="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0"
-                />
-              </label>
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer hover:text-white">
-                <span className="flex items-center space-x-2">
-                  <Sun className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Solar Vector (SPICE)</span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.sunDirectionVector}
-                  onChange={() => onToggleLayer('sunDirectionVector')}
-                  className="rounded bg-slate-800 border-slate-700 text-amber-500 focus:ring-0"
-                />
-              </label>
-              <label className="flex items-center justify-between text-slate-300 cursor-pointer hover:text-white">
-                <span className="flex items-center space-x-2">
-                  <Radio className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Earth Direct LoS (SPICE)</span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.earthDirectionVector}
-                  onChange={() => onToggleLayer('earthDirectionVector')}
-                  className="rounded bg-slate-800 border-slate-700 text-cyan-500 focus:ring-0"
-                />
-              </label>
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* Bottom Left: Navigational Compass Rose with Selenographic Coordinates */}
-      <div className="absolute bottom-6 left-6 z-10 flex items-center space-x-3 pointer-events-none">
-        {/* Circular Compass Dial */}
-        <div className="w-14 h-14 rounded-full bg-obsidian-900/90 border border-slate-700/80 relative flex items-center justify-center shadow-aerospace backdrop-blur-md">
-          <span className="absolute top-1 text-[9px] font-bold text-cyan-400">N</span>
-          <span className="absolute bottom-1 text-[9px] font-bold text-slate-500">S</span>
-          <span className="absolute left-1.5 text-[9px] font-bold text-slate-500">W</span>
-          <span className="absolute right-1.5 text-[9px] font-bold text-slate-500">E</span>
-          <div
-            className="w-8 h-0.5 bg-gradient-to-r from-cyan-400 to-transparent rounded transform transition-transform duration-200"
-            style={{ transform: `rotate(${-controlsRef.current.rotationY * (180 / Math.PI)}deg)` }}
-          />
-          <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-cyan-glow" />
-        </div>
-
-        {/* Live Coordinate Readout */}
-        <div className="bg-obsidian-900/90 border border-slate-800 rounded-md px-3 py-1.5 text-xs font-mono text-slate-300 backdrop-blur-md shadow-aerospace">
-          <span>Lat: <strong className="text-white">{(hoveredCoordinate?.lat ?? currentSite.latitude_deg).toFixed(3)}°</strong></span>
-          <span className="mx-2 text-slate-600">|</span>
-          <span>Lon: <strong className="text-white">{(hoveredCoordinate?.lon ?? currentSite.longitude_deg).toFixed(3)}°</strong></span>
-        </div>
-      </div>
-
-      {/* Pinned Candidate Tag on Moon */}
+      {/* Floating Pinned Candidate Tag on the Moon */}
       {currentSite && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-8 z-10 pointer-events-none">
-          <div className="bg-obsidian-950/90 border border-emerald-500/60 rounded-lg px-3 py-1 text-xs font-mono text-white backdrop-blur-md flex items-center space-x-2 shadow-emerald-glow">
-            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-16 pointer-events-none z-10">
+          <div className="px-3 py-1 rounded bg-obsidian-900/90 border border-cyan-500/50 text-cyan-300 font-mono text-xs flex items-center space-x-1.5 shadow-cyan-glow backdrop-blur-md">
+            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
             <span className="font-bold">{currentSite.name.split('/')[0].trim()}</span>
-            <span className="text-amber-400 font-bold">★★★★</span>
+            <span className="text-amber-400 text-[10px]">★★★★</span>
           </div>
         </div>
       )}
 
-      {/* Bottom Center: Selected Site Status Pill */}
-      {currentSite && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-          <div className="bg-obsidian-900/90 border border-slate-800/90 rounded-full px-4 py-1.5 text-xs font-mono text-slate-300 backdrop-blur-md flex items-center space-x-3 shadow-aerospace">
-            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-            <span className="font-semibold text-white">{currentSite.name}</span>
-            <span className="text-slate-500">|</span>
-            <span className="text-slate-400">{currentSite.latitude_deg.toFixed(2)}°S, {currentSite.longitude_deg.toFixed(2)}°E</span>
-            <span className="text-slate-500">|</span>
-            <span className="text-cyan-300 font-semibold">{currentSite.elevation_m > 0 ? `+${currentSite.elevation_m.toFixed(0)}` : currentSite.elevation_m.toFixed(0)} m DEM</span>
+      {/* Bottom Left: Navigational Compass Rose & Coordinate Readout */}
+      <div className="absolute bottom-4 left-4 z-10 flex items-center space-x-3 pointer-events-auto">
+        <div className="bg-obsidian-900/90 border border-slate-800 rounded-lg p-2 flex items-center space-x-3 backdrop-blur-md shadow-aerospace">
+          {/* Compass Rose */}
+          <div className="relative w-10 h-10 rounded-full border border-slate-700 flex items-center justify-center bg-obsidian-950">
+            <span className="absolute top-0.5 text-[8px] font-bold text-cyan-400">N</span>
+            <span className="absolute bottom-0.5 text-[8px] font-bold text-slate-500">S</span>
+            <span className="absolute left-1 text-[8px] font-bold text-slate-500">W</span>
+            <span className="absolute right-1 text-[8px] font-bold text-slate-500">E</span>
+            <div
+              className="w-6 h-6 flex items-center justify-center transition-transform duration-75"
+              style={{
+                transform: `rotate(${Math.round(THREE.MathUtils.radToDeg(-controlsRef.current.rotationY))}deg)`,
+              }}
+            >
+              <Compass className="w-4 h-4 text-cyan-400" />
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* Candidate Hover Information Card */}
-      {hoveredCandidate && (
-        <div className="absolute top-20 left-4 z-20 pointer-events-none bg-obsidian-950/95 border border-cyan-500/50 rounded-lg p-3 shadow-2xl backdrop-blur-md text-xs font-mono max-w-xs space-y-1.5 animate-fade-in">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-white text-xs">{hoveredCandidate.name}</span>
-            {hoveredCandidate.classification && (
-              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                hoveredCandidate.classification === 'Screening-viable' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' :
-                hoveredCandidate.classification === 'Conditional' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
-                hoveredCandidate.classification === 'Infeasible' ? 'bg-red-500/20 text-red-300 border border-red-500/40' :
-                'bg-slate-800 text-slate-300'
-              }`}>
-                {hoveredCandidate.classification.toUpperCase()}
-              </span>
-            )}
-          </div>
-          <div className="text-[11px] text-slate-400 space-y-0.5">
-            <div>Coords: <span className="text-slate-200">{(hoveredCandidate.latitude_deg ?? hoveredCandidate.latitude)?.toFixed(2)}°S, {(hoveredCandidate.longitude_deg ?? hoveredCandidate.longitude)?.toFixed(2)}°E</span></div>
-            <div>DEM Elevation: <span className="text-cyan-300 font-semibold">{hoveredCandidate.elevation_m > 0 ? `+${hoveredCandidate.elevation_m}` : hoveredCandidate.elevation_m} m</span></div>
-            {hoveredCandidate.composite_score !== undefined && (
-              <div>Composite Score: <span className="text-amber-400 font-bold">{hoveredCandidate.composite_score}/100</span></div>
-            )}
-            {hoveredCandidate.sunlight_percentage !== undefined && (
-              <div>Sunlight: <span className="text-amber-300">{hoveredCandidate.sunlight_percentage}% ({hoveredCandidate.sunlit_hours}h)</span></div>
-            )}
-          </div>
-          <div className="text-[10px] text-cyan-400 border-t border-slate-800 pt-1">
-            [CLICK TO SELECT & FOCUS]
-          </div>
-        </div>
-      )}
-
-      {/* Bottom Right: Tactical Classification Legend & Scientific Limitation Notice */}
-      <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end space-y-1.5 pointer-events-auto">
-        <div className="bg-obsidian-900/90 border border-slate-800 rounded p-2.5 backdrop-blur-md shadow-aerospace text-[10px] font-mono space-y-1.5">
-          <span className="text-slate-400 uppercase font-bold tracking-wider block border-b border-slate-800 pb-1">
-            CANDIDATE CLASSIFICATION LEGEND
-          </span>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-300">
-            <div className="flex items-center space-x-1.5">
-              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-              <span>Screening-viable</span>
+          {/* Coordinate Readout */}
+          <div className="font-mono text-[11px] leading-tight">
+            <div className="text-slate-400">
+              Lat:{' '}
+              <strong className="text-white">
+                {hoveredCoordinate ? hoveredCoordinate.lat.toFixed(3) : currentSite.latitude_deg.toFixed(3)}°
+              </strong>
             </div>
-            <div className="flex items-center space-x-1.5">
-              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-              <span>Conditional</span>
-            </div>
-            <div className="flex items-center space-x-1.5">
-              <span className="w-2 h-2 rounded-full bg-red-400"></span>
-              <span>Infeasible</span>
-            </div>
-            <div className="flex items-center space-x-1.5">
-              <span className="w-2 h-2 rounded-full bg-slate-400"></span>
-              <span>Insufficient data</span>
-            </div>
-            <div className="flex items-center space-x-1.5 col-span-2">
-              <span className="w-2 h-2 rounded-full bg-zinc-600"></span>
-              <span>Outside coverage (&gt; -80°S)</span>
+            <div className="text-slate-400">
+              Lon:{' '}
+              <strong className="text-white">
+                {hoveredCoordinate ? hoveredCoordinate.lon.toFixed(3) : currentSite.longitude_deg.toFixed(3)}°
+              </strong>
             </div>
           </div>
-        </div>
-
-        {/* Scientific Limitation Badge */}
-        <div className="bg-obsidian-950/90 border border-slate-800/80 rounded px-2.5 py-1 text-[10px] font-mono text-slate-400 backdrop-blur-md max-w-xs text-right">
-          <span className="text-amber-400 font-bold">Scientific Notice: </span>
-          LOLA 80m DEM supports regional screening, not landing-scale hazard certification.
         </div>
       </div>
     </div>

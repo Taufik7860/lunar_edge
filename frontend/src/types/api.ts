@@ -184,6 +184,163 @@ export interface ContinuityEnvelopeResult {
   spatial_success_rate: number;
   temporal_success_rate: number;
   overall_robustness_score: number;
+  baseline_continuity_metrics?: ContinuityMetrics;
+}
+
+export interface ContinuityMetrics {
+  site_name: string;
+  start_utc: string;
+  duration_days: number;
+  step_minutes: number;
+  total_mission_hours: number;
+  temporal_uncertainty_hours: number;
+  total_sunlight_hours: number;
+  sunlight_availability_pct: number;
+  longest_continuous_illumination_hours: number;
+  longest_continuous_darkness_hours: number;
+  total_earth_visibility_hours: number;
+  earth_visibility_pct: number;
+  longest_continuous_earth_visibility_hours: number;
+  longest_continuous_earth_blackout_hours: number;
+  total_simultaneous_hours: number;
+  simultaneous_availability_pct: number;
+  longest_continuous_simultaneous_hours: number;
+  day_to_night_transitions: number;
+  night_to_day_transitions: number;
+  comms_acquired_transitions: number;
+  comms_lost_transitions: number;
+  simultaneous_acquired_transitions: number;
+  simultaneous_lost_transitions: number;
+  explanation: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8: Master Mission Evaluation Types
+// ---------------------------------------------------------------------------
+
+export interface ConstraintEvaluation {
+  name: string;
+  description: string;
+  operator: '<=' | '>=' | string;
+  threshold: number;
+  actual_value: number | null;
+  unit: string;
+  margin: number | null;
+  status: 'EVALUATED_PASS' | 'EVALUATED_FAIL' | 'UNEVALUATED' | 'OUTSIDE_COVERAGE' | string;
+  is_binding: boolean;
+}
+
+export interface MissionEvaluationRequest {
+  site: LandingSite;
+  start_utc: string;
+  duration_days?: number;
+  step_minutes?: number;
+  max_slope_deg?: number;
+  requirements?: MissionRequirements;
+  horizon_radius_km?: number;
+}
+
+export interface MissionEvaluationResponse {
+  site: LandingSite;
+  start_utc: string;
+  duration_days: number;
+  step_minutes: number;
+  overall_classification: 'FEASIBLE' | 'CONDITIONAL' | 'INFEASIBLE' | 'OUTSIDE_COVERAGE' | string;
+  is_feasible: boolean;
+  composite_score: number;
+  constraints: ConstraintEvaluation[];
+  binding_constraints: ConstraintEvaluation[];
+  continuity_metrics: ContinuityMetrics;
+  visibility_summary: VisibilitySummary;
+  identified_risks: string[];
+  recommendation: string;
+  data_completeness: string;
+  provenance: Record<string, any>;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: Probabilistic Mission Resilience Types
+// ---------------------------------------------------------------------------
+
+export interface UncertaintyDistributionConfig {
+  seed?: number;
+  num_scenarios?: number;
+  spatial_along_track_sigma_m?: number;
+  spatial_cross_track_sigma_m?: number;
+  approach_azimuth_deg?: number;
+  temporal_slippage_max_hours?: number;
+  terrain_slope_sigma_deg?: number;
+}
+
+export interface ResilienceScenarioResult {
+  scenario_id: number;
+  dx_m: number;
+  dy_m: number;
+  radial_dispersion_m: number;
+  dt_hours: number;
+  evaluated_lat_deg: number;
+  evaluated_lon_deg: number;
+  evaluated_slope_deg: number;
+  longest_sunlit_window_hours: number;
+  longest_dark_period_hours: number;
+  longest_earth_window_hours: number;
+  is_feasible: boolean;
+  failed_constraints: string[];
+}
+
+export interface ParameterSensitivity {
+  parameter_name: string;
+  correlation_with_margin: number;
+  impact_rating: 'HIGH' | 'MEDIUM' | 'LOW' | string;
+  explanation: string;
+}
+
+export interface ProbabilisticResilienceRequest {
+  site: LandingSite;
+  start_utc: string;
+  duration_days?: number;
+  step_minutes?: number;
+  max_slope_deg?: number;
+  requirements?: MissionRequirements;
+  uncertainty_config?: UncertaintyDistributionConfig;
+}
+
+export interface ProbabilisticResilienceResponse {
+  site: LandingSite;
+  nominal_start_utc: string;
+  duration_days: number;
+  num_scenarios_evaluated: number;
+  num_scenarios_feasible: number;
+  feasibility_frequency: number;
+  confidence_interval_95: number[];
+  scenarios: ResilienceScenarioResult[];
+  parameter_sensitivities: ParameterSensitivity[];
+  failure_mode_breakdown: Record<string, number>;
+  most_influential_failure_condition: string;
+  methodology_and_disclaimer: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10: Counterfactual Recovery Intelligence Types
+// ---------------------------------------------------------------------------
+
+export interface CounterfactualRecoveryRequest {
+  site: LandingSite;
+  start_utc: string;
+  duration_days?: number;
+  step_minutes?: number;
+  max_slope_deg?: number;
+  requirements?: MissionRequirements;
+}
+
+export interface CounterfactualRecoveryResponse {
+  site: LandingSite;
+  baseline_evaluation: MissionEvaluationResponse;
+  binding_failure_cause: string;
+  interventions_evaluated: RecoveryIntervention[];
+  optimal_recovery_path: RecoveryIntervention | null;
+  recovery_recommendation: string;
+  scientific_validation_note: string;
 }
 
 export interface SystemHealth {
@@ -304,16 +461,26 @@ export type InterventionStatus =
   | 'VERIFIED';
 
 export interface RecoveryIntervention {
-  id: string;
+  intervention_type: 'TEMPORAL_SHIFT' | 'SPATIAL_RELOCATION' | 'OPERATIONAL_RELAXATION' | 'COMBINED' | string;
   title: string;
-  type: 'TEMPORAL_SHIFT' | 'SPATIAL_RELOCATION' | 'ASSET_UPGRADE' | 'ORBITAL_RELAY';
   description: string;
-  status: InterventionStatus;
-  baseline_metric: string;
-  projected_metric: string;
-  improvement_delta: string;
-  residual_risk: string;
-  feasibility_score: number; // 0 - 100
+  parameters: Record<string, any>;
+  recalculated_metrics: Record<string, number>;
+  resolved_constraints: string[];
+  is_resolved: boolean;
+  new_feasibility: boolean;
+  improvement_summary: string;
+  remaining_risks: string[];
+
+  // Backward compatibility fields if needed
+  id?: string;
+  type?: 'TEMPORAL_SHIFT' | 'SPATIAL_RELOCATION' | 'ASSET_UPGRADE' | 'ORBITAL_RELAY' | string;
+  status?: InterventionStatus;
+  baseline_metric?: string;
+  projected_metric?: string;
+  improvement_delta?: string;
+  residual_risk?: string;
+  feasibility_score?: number;
 }
 
 export interface LayerSettings {

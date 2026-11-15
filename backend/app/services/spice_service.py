@@ -31,6 +31,7 @@ from app.utils.coordinate_utils import (
     vector_to_azel,
     compute_solar_incidence,
 )
+from app.utils.date_utils import normalize_to_spice_utc
 
 # Kernel directory relative to this file
 KERNELS_DIR = Path(__file__).parent.parent.parent / "data" / "kernels"
@@ -101,8 +102,9 @@ class SPICEService:
         """Convert ISO UTC string (e.g. '2026-01-15T12:00:00Z') to SPICE Ephemeris Time (ET)."""
         with self._lock:
             self.load_kernels()
+            normalized_utc = normalize_to_spice_utc(utc_str)
             try:
-                return float(spice.str2et(utc_str))
+                return float(spice.str2et(normalized_utc))
             except Exception as e:
                 raise ValueError(f"Invalid UTC timestamp string '{utc_str}': {e}") from e
 
@@ -165,6 +167,16 @@ class SPICEService:
             sin_ang_rad = min(1.0, body_radius_km / max(1e-6, distance_km))
             angular_radius_deg = float(np.degrees(np.arcsin(sin_ang_rad)))
 
+            # Sub-body point coordinates on Moon (selenographic lat/lon)
+            try:
+                sub_pt, _, _ = spice.subpnt("Near point: ellipsoid", "MOON", et, "MOON_ME", abcorr, body_id)
+                _, sub_lon_rad, sub_lat_rad = spice.reclat(sub_pt)
+                sub_lat_deg = float(np.degrees(sub_lat_rad))
+                sub_lon_deg = float(np.degrees(sub_lon_rad))
+            except Exception:
+                sub_lat_deg = None
+                sub_lon_deg = None
+
             return {
                 "body": body_id,
                 "azimuth_deg": azimuth_deg,
@@ -173,12 +185,43 @@ class SPICEService:
                 "angular_radius_deg": angular_radius_deg,
                 "angular_diameter_deg": angular_radius_deg * 2.0,
                 "light_time_s": float(lt),
+                "sub_lat_deg": sub_lat_deg,
+                "sub_lon_deg": sub_lon_deg,
                 "topocentric_vector_km": {
                     "east": float(np.dot(rel_vec, east)),
                     "north": float(np.dot(rel_vec, north)),
                     "up": float(np.dot(rel_vec, up)),
                 },
             }
+
+    def compute_subpnt(self, body: str, et: float) -> tuple[float, float]:
+        """
+        Compute the sub-body selenographic latitude and longitude on the Moon in degrees.
+        Uses MOON_ME reference frame and IAU Moon triaxial ellipsoid.
+        """
+        with self._lock:
+            self.load_kernels()
+            body_id = body.upper()
+            pt, _, _ = spice.subpnt("Near point: ellipsoid", "MOON", et, "MOON_ME", "CN+S", body_id)
+            _, lon_rad, lat_rad = spice.reclat(pt)
+            return float(np.degrees(lat_rad)), float(np.degrees(lon_rad))
+
+    def compute_earth_libration(self, et: float) -> dict:
+        """
+        Compute lunar optical and physical libration angles as seen from Earth.
+        Returns sub-Earth latitude (latitude libration) and longitude (longitude libration).
+        """
+        sub_lat, sub_lon = self.compute_subpnt("EARTH", et)
+        return {
+            "et": et,
+            "utc": self.et_to_utc(et),
+            "libration_lat_deg": sub_lat,
+            "libration_lon_deg": sub_lon,
+            "sub_earth_point": {
+                "latitude_deg": sub_lat,
+                "longitude_deg": sub_lon,
+            },
+        }
 
     def compute_solar_and_earth_geometry(
         self,
@@ -229,7 +272,8 @@ class SPICEService:
         with self._lock:
             self.load_kernels()
 
-            start_et = float(spice.str2et(start_utc))
+            normalized_start = normalize_to_spice_utc(start_utc)
+            start_et = float(spice.str2et(normalized_start))
             total_seconds = duration_days * 86400.0
             step_seconds = step_minutes * 60.0
             n_steps = int(np.ceil(total_seconds / step_seconds)) + 1

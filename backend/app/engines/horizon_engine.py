@@ -1,7 +1,7 @@
 """
-horizon_engine.py — LUNAR EDGE Phase 3
+horizon_engine.py — LUNAR EDGE Phase 3 & 5
 
-Computes the terrain horizon profile from a LOLA DEM patch.
+Computes the terrain horizon obstruction profile from a LOLA DEM patch.
 
 For a surface observer at (observer_x_m, observer_y_m, observer_elevation_m)
 this engine casts rays in N_AZ azimuth directions and, for each ray,
@@ -15,24 +15,24 @@ Output: horizon_profile[az_idx] = max terrain elevation angle [degrees]
 Scientific notes:
   - Elevation angle = atan2(terrain_height - observer_height, horizontal_distance)
   - Horizontal distance is Euclidean in the patch Polar Stereo plane (metres)
-  - Lunar surface curvature correction applied for distances > 1 km:
+  - Lunar surface curvature correction applied for all distances:
       effective_depression = horizontal_dist**2 / (2 * R_moon)
       corrected_target_height = terrain_height - effective_depression
-    This accounts for the Moon's curvature dropping away beneath long rays.
-  - Nodata cells are skipped (not treated as obstacles or flat terrain)
-  - If a ray has no valid DEM cells, that azimuth returns 0.0 (conservative)
-
-Coordinate frame:
-  The DEM patch uses LOLA Polar Stereographic (PS) coordinates with North
-  defined as increasing Y and East as increasing X.  Azimuth 0° = +Y direction.
-  Ray direction: (sin(az), cos(az)) in (X, Y) = (East, North).
+    This accounts for the Moon's spherical curvature dropping away beneath rays.
+  - Grid convergence correction:
+      In LOLA Polar Stereographic (Central Meridian = 0°), local true North
+      rotates by the observer's selenographic longitude. Rays are corrected so
+      azimuth 0° always corresponds to true selenographic North.
+  - Nodata cells are skipped (not treated as obstacles or flat terrain).
+  - Physical minimum dip is bounded by the observer's spherical horizon dip:
+      min_dip = -arccos(R / (R + h_obs)).
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MOON_RADIUS_M = 1_737_400.0   # IAU 2000 mean sphere [m]
+MOON_RADIUS_M = 1_737_400.0   # IAU 2000 mean sphere radius [m]
 
 
 # ---------------------------------------------------------------------------
@@ -64,56 +64,29 @@ def compute_horizon_profile(
     Args:
         patch:          DEMPatch from TerrainEngine.extract_patch().
         n_azimuths:     Number of azimuth directions (default 360 → 1° steps).
-        max_range_m:    Maximum ray length [m].  Defaults to patch.radius_m.
+        max_range_m:    Maximum ray length [m]. Defaults to patch.radius_m.
         min_range_m:    Minimum range before the first sample [m].
                         Excludes the observer's own cell from the horizon.
-        n_range_steps:  Number of samples along each ray.
+        n_range_steps:  Number of samples along each ray (adaptive upscaling if needed).
 
     Returns:
         horizon_profile: np.ndarray shape (n_azimuths,), dtype float64 [degrees].
                          horizon_profile[i] = maximum terrain elevation angle
                          in the direction of azimuth i × (360/n_azimuths) degrees.
-                         0° = terrain at observer horizon level (flat).
-                         Positive = terrain above horizon (blocking).
-                         Negative values clamped to -5° (physically extreme).
+                         0° = terrain at observer horizon level.
+                         Positive = terrain above horizon (blocking line of sight).
+                         Negative = terrain dips below horizontal tangent plane.
     """
     if max_range_m is None:
         max_range_m = patch.radius_m
-
-    # Build a 2-D grid of PS coordinates and elevations
-    # x_coords: shape (n_cols,)   y_coords: shape (n_rows,)
-    xx, yy = np.meshgrid(patch.x_coords, patch.y_coords)   # (n_rows, n_cols)
-    elev = patch.elevation_m.copy()                          # (n_rows, n_cols), NaN = nodata
 
     obs_x = patch.observer_x_m
     obs_y = patch.observer_y_m
     obs_e = patch.observer_elevation_m
 
-    # Pre-compute flat offsets from observer for every grid cell
-    dx = xx - obs_x    # (n_rows, n_cols) metres East
-    dy = yy - obs_y    # (n_rows, n_cols) metres North
-    horiz_dist = np.sqrt(dx**2 + dy**2)   # horizontal distance [m]
-
-    # Avoid dividing by zero at the observer cell
-    horiz_dist_safe = np.where(horiz_dist < 1e-3, 1e-3, horiz_dist)
-
-    # Lunar curvature correction:
-    #   The Moon's surface curves away at d^2 / (2 R_moon) metres per d metres.
-    #   A distant target is effectively lower by this amount.
-    curvature_drop = horiz_dist_safe**2 / (2.0 * MOON_RADIUS_M)   # [m]
-
-    # Effective height difference (positive = target above observer)
-    height_diff = elev - obs_e - curvature_drop   # (n_rows, n_cols) [m]
-
-    # Elevation angle of every cell as seen from observer [radians]
-    el_angle_rad = np.arctan2(height_diff, horiz_dist_safe)   # (n_rows, n_cols)
-
-    # Mask nodata and cells closer than min_range_m (observer's own cell)
-    valid_mask = (~patch.nodata_mask) & (horiz_dist > min_range_m)
-
-    # Azimuth array
+    # Azimuth array [0, 360)
     az_step = 360.0 / n_azimuths
-    azimuths_deg = np.arange(n_azimuths) * az_step   # 0, 1, 2, ..., 359
+    azimuths_deg = np.arange(n_azimuths) * az_step
 
     horizon = np.zeros(n_azimuths, dtype=np.float64)
 
@@ -135,25 +108,28 @@ def compute_horizon_profile(
     ray_dx = np.sin(az_rad)   # East component in PS grid
     ray_dy = np.cos(az_rad)   # North component in PS grid
 
-    # Range samples along each ray
-    ranges = np.linspace(min_range_m, max_range_m, n_range_steps)
+    # Adaptive range sampling: ensure range step <= 0.75 * pixel_size_m (Nyquist rate)
+    px_size = max(10.0, float(patch.pixel_size_m))
+    adaptive_steps = int(math.ceil((max_range_m - min_range_m) / (px_size * 0.75)))
+    actual_range_steps = max(n_range_steps, adaptive_steps)
+    ranges = np.linspace(min_range_m, max_range_m, actual_range_steps)
+
+    # Patch grid coordinate mapping helpers
+    x0 = patch.x_coords[0]
+    px = patch.pixel_size_m
+    y0 = patch.y_coords[0]
+    py = patch.y_coords[1] - patch.y_coords[0]  # signed pixel step in Y
+
+    n_rows_p, n_cols_p = patch.elevation_m.shape
+    curve_table = ranges**2 / (2.0 * MOON_RADIUS_M)
 
     for i in range(n_azimuths):
         rdx = ray_dx[i]
         rdy = ray_dy[i]
 
-        # Sample points along this ray
+        # Sample coordinates along this ray
         sx = obs_x + ranges * rdx
         sy = obs_y + ranges * rdy
-
-        # Map sample PS coords → pixel indices via patch grid
-        # x_coords is a 1D array of cell-centre X values (uniform spacing assumed)
-        x0 = patch.x_coords[0]
-        px = patch.pixel_size_m   # always positive
-
-        y0 = patch.y_coords[0]
-        # y_coords may be decreasing (N→S in rasterio convention)
-        py = patch.y_coords[1] - patch.y_coords[0]  # signed pixel step in Y
 
         col_f = (sx - x0) / px
         row_f = (sy - y0) / py
@@ -162,7 +138,6 @@ def compute_horizon_profile(
         row_i = np.round(row_f).astype(int)
 
         # Keep only samples within patch bounds
-        n_rows_p, n_cols_p = patch.elevation_m.shape
         in_bounds = (
             (col_i >= 0) & (col_i < n_cols_p) &
             (row_i >= 0) & (row_i < n_rows_p)
@@ -175,6 +150,7 @@ def compute_horizon_profile(
         rows_ok = row_i[in_bounds]
         cols_ok = col_i[in_bounds]
         ranges_ok = ranges[in_bounds]
+        curve_ok = curve_table[in_bounds]
 
         # Get elevations at sample points
         sample_elev = patch.elevation_m[rows_ok, cols_ok]
@@ -184,12 +160,11 @@ def compute_horizon_profile(
             horizon[i] = 0.0
             continue
 
-        # Curvature correction for these sample ranges
-        curve = ranges_ok**2 / (2.0 * MOON_RADIUS_M)
-        h_diff = sample_elev - obs_e - curve
+        # Effective height difference accounting for lunar curvature drop
+        h_diff = sample_elev - obs_e - curve_ok
         el_ang = np.degrees(np.arctan2(h_diff, ranges_ok))
 
-        # Only consider valid cells
+        # Only consider valid DEM cells
         el_ang[~sample_valid] = -90.0
         horizon[i] = float(np.max(el_ang))
 
@@ -226,3 +201,35 @@ def interpolate_horizon(
     t = idx_f - math.floor(idx_f)
 
     return float((1.0 - t) * horizon_profile[idx0] + t * horizon_profile[idx1])
+
+
+def compute_horizon_statistics(horizon_profile: np.ndarray) -> Dict[str, float]:
+    """
+    Compute statistical summary and solid-angle sky visibility from a horizon profile.
+
+    Returns:
+        min_deg: lowest terrain horizon obstruction angle [deg]
+        max_deg: highest obstacle angle [deg]
+        mean_deg: azimuth-averaged horizon obstruction angle [deg]
+        std_deg: standard deviation of horizon elevations [deg]
+        sky_visibility_fraction: fraction of upper hemisphere visible to observer [0.0 - 1.0]
+    """
+    profile = np.asarray(horizon_profile, dtype=np.float64)
+    min_val = float(np.min(profile))
+    max_val = float(np.max(profile))
+    mean_val = float(np.mean(profile))
+    std_val = float(np.std(profile))
+
+    # Sky visibility solid angle fraction:
+    # Integral over azimuth of (1 - sin(max(0, theta))) / 2pi
+    # For positive horizon angles, terrain blocks fraction sin(theta) of upper hemisphere
+    thetas_rad = np.radians(np.clip(profile, 0.0, 90.0))
+    sky_vis = float(np.mean(1.0 - np.sin(thetas_rad)))
+
+    return {
+        "min_deg": min_val,
+        "max_deg": max_val,
+        "mean_deg": mean_val,
+        "std_deg": std_val,
+        "sky_visibility_fraction": sky_vis,
+    }

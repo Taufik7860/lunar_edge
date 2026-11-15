@@ -117,6 +117,7 @@ def compute_terrain_visibility_time_series(
         h_earth = interpolate_horizon(horizon_profile, s.earth_azimuth_deg)
         earth_clearance = s.earth_elevation_deg - h_earth
         is_earth_vis = (earth_clearance >= 0.0)
+        earth_frac = compute_solar_disc_fraction(earth_clearance, s.earth_angular_radius_deg)
         
         # 3. Simultaneous operation (power + comms)
         is_simultaneous = (sun_frac > 0.0) and is_earth_vis
@@ -139,6 +140,7 @@ def compute_terrain_visibility_time_series(
                 earth_horizon_elevation_deg=h_earth,
                 earth_clearance_deg=earth_clearance,
                 is_earth_visible=is_earth_vis,
+                earth_visible_fraction=round(earth_frac, 4),
                 is_simultaneous_operating=is_simultaneous,
             )
         )

@@ -13,6 +13,10 @@ import {
   ContinuityEnvelopeResult,
   MissionRequirements,
   SystemHealth,
+  MissionEvaluationResponse,
+  ProbabilisticResilienceResponse,
+  CounterfactualRecoveryResponse,
+  UncertaintyDistributionConfig,
 } from '../types/api';
 
 const API_BASE = '/api';
@@ -159,5 +163,78 @@ export const api = {
       body: JSON.stringify(req),
     });
     return handleResponse<import('../types/api').OpportunityDiscoveryResponse>(res);
+  },
+
+  async evaluateMission(
+    site: LandingSite,
+    start_utc: string,
+    duration_days: number = 14.0,
+    step_minutes: number = 15.0,
+    max_slope_deg: number = 15.0,
+    requirements?: MissionRequirements,
+    horizon_radius_km: number = 20.0
+  ): Promise<MissionEvaluationResponse> {
+    const res = await fetch(`${API_BASE}/mission/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        site,
+        start_utc,
+        duration_days,
+        step_minutes,
+        max_slope_deg,
+        requirements,
+        horizon_radius_km,
+      }),
+    });
+    return handleResponse<MissionEvaluationResponse>(res);
+  },
+
+  async evaluateResilience(
+    site: LandingSite,
+    start_utc: string,
+    duration_days: number = 14.0,
+    step_minutes: number = 30.0,
+    max_slope_deg: number = 15.0,
+    requirements?: MissionRequirements,
+    uncertainty_config?: UncertaintyDistributionConfig
+  ): Promise<ProbabilisticResilienceResponse> {
+    const res = await fetch(`${API_BASE}/mission/resilience`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        site,
+        start_utc,
+        duration_days,
+        step_minutes,
+        max_slope_deg,
+        requirements,
+        uncertainty_config,
+      }),
+    });
+    return handleResponse<ProbabilisticResilienceResponse>(res);
+  },
+
+  async planRecovery(
+    site: LandingSite,
+    start_utc: string,
+    duration_days: number = 14.0,
+    step_minutes: number = 30.0,
+    max_slope_deg: number = 15.0,
+    requirements?: MissionRequirements
+  ): Promise<CounterfactualRecoveryResponse> {
+    const res = await fetch(`${API_BASE}/mission/recovery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        site,
+        start_utc,
+        duration_days,
+        step_minutes,
+        max_slope_deg,
+        requirements,
+      }),
+    });
+    return handleResponse<CounterfactualRecoveryResponse>(res);
   },
 };

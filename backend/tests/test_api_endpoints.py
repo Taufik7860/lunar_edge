@@ -170,3 +170,86 @@ def test_api_continuity_envelope():
     assert "overall_robustness_score" in data
     assert "perturbations" in data
     assert 0.0 <= data["overall_robustness_score"] <= 1.0
+
+
+def test_api_mission_evaluate():
+    """Verify master mission evaluation endpoint."""
+    payload = {
+        "site": {
+            "name": "Shackleton Connecting Ridge",
+            "latitude_deg": -89.70,
+            "longitude_deg": 129.0,
+            "elevation_m": 1120.0,
+            "slope_deg": 5.0,
+            "aspect_deg": 130.0,
+        },
+        "start_utc": "2026-02-01T00:00:00Z",
+        "duration_days": 2.0,
+        "step_minutes": 120.0,
+        "max_slope_deg": 25.0,
+        "requirements": {
+            "min_continuous_sunlight_hours": 12.0,
+            "max_tolerable_dark_hours": 72.0,
+            "min_continuous_earth_comms_hours": 6.0,
+            "min_simultaneous_operating_hours": 6.0,
+        },
+    }
+    response = client.post("/api/mission/evaluate", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "overall_classification" in data
+    assert "is_feasible" in data
+    assert "constraints" in data
+    assert "binding_constraints" in data
+    assert "continuity_metrics" in data
+
+
+def test_api_mission_resilience():
+    """Verify Monte Carlo resilience endpoint."""
+    payload = {
+        "site": {
+            "name": "Shackleton Connecting Ridge",
+            "latitude_deg": -89.70,
+            "longitude_deg": 129.0,
+            "elevation_m": 1120.0,
+            "slope_deg": 5.0,
+            "aspect_deg": 130.0,
+        },
+        "start_utc": "2026-02-01T00:00:00Z",
+        "duration_days": 1.0,
+        "step_minutes": 120.0,
+        "uncertainty_config": {
+            "seed": 42,
+            "num_scenarios": 10,
+        },
+    }
+    response = client.post("/api/mission/resilience", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["num_scenarios_evaluated"] == 10
+    assert 0.0 <= data["feasibility_frequency"] <= 1.0
+    assert "confidence_interval_95" in data
+
+
+def test_api_mission_recovery():
+    """Verify counterfactual recovery intelligence endpoint."""
+    payload = {
+        "site": {
+            "name": "Shackleton Connecting Ridge",
+            "latitude_deg": -89.70,
+            "longitude_deg": 129.0,
+            "elevation_m": 1120.0,
+            "slope_deg": 5.0,
+            "aspect_deg": 130.0,
+        },
+        "start_utc": "2026-02-01T00:00:00Z",
+        "duration_days": 1.0,
+        "step_minutes": 120.0,
+    }
+    response = client.post("/api/mission/recovery", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "baseline_evaluation" in data
+    assert "binding_failure_cause" in data
+    assert "interventions_evaluated" in data
+

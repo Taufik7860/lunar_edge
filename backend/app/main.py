@@ -13,7 +13,8 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from app.utils.date_utils import validate_iso_utc_string
 
 from app.engines.geometry_engine import GeometryEngine, CANDIDATE_LANDING_SITES
 from app.engines.mission_engine import MissionEngine
@@ -28,6 +29,12 @@ from app.models.schemas import (
     VisibilityTimeSeriesResponse,
     ContinuityEnvelopeResult,
     MissionRequirements,
+    MissionEvaluationRequest,
+    MissionEvaluationResponse,
+    ProbabilisticResilienceRequest,
+    ProbabilisticResilienceResponse,
+    CounterfactualRecoveryRequest,
+    CounterfactualRecoveryResponse,
 )
 from app.services.spice_service import SPICEService, REQUIRED_KERNELS
 
@@ -84,6 +91,11 @@ class EpochGeometryRequest(BaseModel):
     site: LandingSite
     utc: str = Field(..., description="UTC ISO timestamp, e.g. '2026-02-01T12:00:00Z'")
 
+    @field_validator("utc", mode="before")
+    @classmethod
+    def validate_utc(cls, v: str) -> str:
+        return validate_iso_utc_string(str(v))
+
 
 class ElevationRequest(BaseModel):
     latitude_deg: float = Field(..., ge=-90.0, le=90.0)
@@ -105,6 +117,11 @@ class VisibilityEvaluationRequest(BaseModel):
     step_minutes: float = Field(15.0, gt=0.0, le=1440.0)
     horizon_radius_km: float = Field(20.0, gt=1.0, le=100.0)
 
+    @field_validator("start_utc", mode="before")
+    @classmethod
+    def validate_start_utc(cls, v: str) -> str:
+        return validate_iso_utc_string(str(v))
+
 
 class ContinuityEnvelopeRequest(BaseModel):
     site: LandingSite
@@ -112,6 +129,11 @@ class ContinuityEnvelopeRequest(BaseModel):
     duration_days: float = Field(14.0, gt=0.0, le=60.0)
     step_minutes: float = Field(30.0, gt=5.0, le=1440.0)
     requirements: Optional[MissionRequirements] = None
+
+    @field_validator("start_utc", mode="before")
+    @classmethod
+    def validate_start_utc(cls, v: str) -> str:
+        return validate_iso_utc_string(str(v))
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +278,75 @@ def evaluate_continuity_envelope(req: ContinuityEnvelopeRequest):
         )
     except Exception as e:
         logger.error("Continuity envelope evaluation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/mission/evaluate", response_model=MissionEvaluationResponse)
+def evaluate_candidate_mission(req: MissionEvaluationRequest):
+    """
+    Master Mission Evaluation:
+    Evaluates candidate site across all mission constraints (slope, continuous daylight,
+    tolerable darkness, Earth comms, simultaneous ops). Returns binding constraints,
+    risks, recommendations, and defensible rule-based classification.
+    """
+    engine = get_mission_engine()
+    try:
+        return engine.evaluate_candidate_mission(
+            site=req.site,
+            start_utc=req.start_utc,
+            duration_days=req.duration_days,
+            step_minutes=req.step_minutes,
+            max_slope_deg=req.max_slope_deg,
+            requirements=req.requirements,
+            horizon_radius_km=req.horizon_radius_km,
+        )
+    except Exception as e:
+        logger.error("Mission evaluation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/mission/resilience", response_model=ProbabilisticResilienceResponse)
+def evaluate_probabilistic_resilience(req: ProbabilisticResilienceRequest):
+    """
+    Probabilistic Mission Resilience:
+    Repeatable Monte Carlo simulation modeling touchdown dispersion ellipses,
+    launch epoch variations, and terrain slope measurement uncertainty.
+    """
+    engine = get_mission_engine()
+    try:
+        return engine.evaluate_probabilistic_resilience(
+            site=req.site,
+            start_utc=req.start_utc,
+            duration_days=req.duration_days,
+            step_minutes=req.step_minutes,
+            max_slope_deg=req.max_slope_deg,
+            requirements=req.requirements,
+            uncertainty_config=req.uncertainty_config,
+        )
+    except Exception as e:
+        logger.error("Probabilistic resilience evaluation failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/mission/recovery", response_model=CounterfactualRecoveryResponse)
+def plan_counterfactual_recovery(req: CounterfactualRecoveryRequest):
+    """
+    Counterfactual Mission Recovery Intelligence:
+    Identifies binding failure causes and generates verified actionable interventions
+    (temporal launch window shift, spatial terrace relocation, and operational adaptation).
+    """
+    engine = get_mission_engine()
+    try:
+        return engine.plan_counterfactual_recovery(
+            site=req.site,
+            start_utc=req.start_utc,
+            duration_days=req.duration_days,
+            step_minutes=req.step_minutes,
+            max_slope_deg=req.max_slope_deg,
+            requirements=req.requirements,
+        )
+    except Exception as e:
+        logger.error("Counterfactual recovery planning failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
