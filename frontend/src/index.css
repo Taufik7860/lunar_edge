@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #060911;
+    color: #e2e8f0;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+/* Custom aerospace scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0b111e;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f2e4d;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2d426d;
+}
+
+/* Plotly overrides for dark aerospace look */
+.js-plotly-plot .plotly .modebar {
+  background: transparent !important;
+}
+.js-plotly-plot .plotly .modebar-btn path {
+  fill: #64748b !important;
+}
+.js-plotly-plot .plotly .modebar-btn:hover path {
+  fill: #38bdf8 !important;
+}

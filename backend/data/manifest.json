@@ -1,0 +1,90 @@
+{
+  "datasets": {
+    "LDEM_80S_80MPP_ADJ.TIF": {
+      "product_type": "LOLA_DEM",
+      "filename": "LDEM_80S_80MPP_ADJ.TIF",
+      "source_url": "https://pgda.gsfc.nasa.gov/data/LOLA_20mpp/LDEM_80S_80MPP_ADJ.TIF",
+      "local_path": "data\\raw\\lola\\LDEM_80S_80MPP_ADJ.TIF",
+      "file_size_bytes": 189158392,
+      "sha256": "82030DCBDD7C4BB0C7D858E9B4B293B9F2CDA5A543BA31EC0F42784BD6BEEE5A",
+      "resolution_mpp": 80.0,
+      "coverage": "80S to 90S",
+      "crs": "Moon_2000_South_Pole_Stereographic",
+      "datum_radius_m": 1737400.0,
+      "purpose": "Digital Elevation Model for lunar south-pole terrain horizon and slope modeling"
+    }
+  },
+  "kernels": {
+    "naif0012.tls": {
+      "kernel_type": "LSK",
+      "filename": "naif0012.tls",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+      "local_path": "C:\\Users\\Nikhil\\Desktop\\nasa\\backend\\data\\kernels\\naif0012.tls",
+      "download_date": "2026-11-14T15:43:53.768985+00:00",
+      "file_size_bytes": 5257,
+      "sha256_prefix": "678e32bdb5a74411",
+      "purpose": "Leap seconds kernel \u2014 UTC to Ephemeris Time (ET/TDB) conversion"
+    },
+    "de440s.bsp": {
+      "kernel_type": "SPK",
+      "filename": "de440s.bsp",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+      "local_path": "data\\kernels\\de440s.bsp",
+      "download_date": "2026-11-14T15:49:41.561768+00:00",
+      "file_size_bytes": 32726016,
+      "sha256_prefix": "c1c7feeab882263f",
+      "purpose": "JPL DE440s planetary ephemeris (1849-2150)"
+    },
+    "moon_pa_de440_200625.bpc": {
+      "kernel_type": "PCK",
+      "filename": "moon_pa_de440_200625.bpc",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/moon_pa_de440_200625.bpc",
+      "local_path": "data\\kernels\\moon_pa_de440_200625.bpc",
+      "download_date": "2026-11-14T15:49:41.583274+00:00",
+      "file_size_bytes": 12863488,
+      "sha256_prefix": "60cd55aa401ea2ea",
+      "purpose": "High-accuracy binary PCK for lunar orientation (MOON_PA)"
+    },
+    "moon_de440_250416.tf": {
+      "kernel_type": "FK",
+      "filename": "moon_de440_250416.tf",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/fk/satellites/moon_de440_250416.tf",
+      "local_path": "data\\kernels\\moon_de440_250416.tf",
+      "download_date": "2026-11-14T15:49:41.594881+00:00",
+      "file_size_bytes": 19478,
+      "sha256_prefix": "a47c71e9c9f33796",
+      "purpose": "DE440 lunar frame kernel (MOON_PA_DE440 & MOON_ME_DE440)"
+    },
+    "moon_assoc_me.tf": {
+      "kernel_type": "FK",
+      "filename": "moon_assoc_me.tf",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/fk/satellites/moon_assoc_me.tf",
+      "local_path": "data\\kernels\\moon_assoc_me.tf",
+      "download_date": "2026-11-14T15:49:41.606080+00:00",
+      "file_size_bytes": 8468,
+      "sha256_prefix": "52c622043ce0447d",
+      "purpose": "Associates generic MOON_ME alias to DE440 Mean Earth frame"
+    },
+    "pck00011.tpc": {
+      "kernel_type": "PCK",
+      "filename": "pck00011.tpc",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/pck00011.tpc",
+      "local_path": "data\\kernels\\pck00011.tpc",
+      "download_date": "2026-11-14T15:49:41.617169+00:00",
+      "file_size_bytes": 131226,
+      "sha256_prefix": "3dff7b1dbeceaa01",
+      "purpose": "IAU planetary constants: radii and physical models"
+    },
+    "earth_latest_high_prec.bpc": {
+      "kernel_type": "PCK",
+      "filename": "earth_latest_high_prec.bpc",
+      "source_url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_latest_high_prec.bpc",
+      "local_path": "data\\kernels\\earth_latest_high_prec.bpc",
+      "download_date": "2026-11-14T15:49:41.633553+00:00",
+      "file_size_bytes": 5163008,
+      "sha256_prefix": "6e77690ba455a644",
+      "purpose": "High-precision Earth orientation binary PCK (EOP)"
+    }
+  },
+  "created": "2026-11-14T15:43:53.761233+00:00"
+}
