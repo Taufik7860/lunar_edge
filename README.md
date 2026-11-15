@@ -8,6 +8,7 @@
 **🌐 Live Website:** [![Website](https://img.shields.io/badge/Visit_LUNAR_EDGE-2EA44F?style=for-the-badge&logo=googlechrome&logoColor=white)](https://lunar-edge-seven.vercel.app/)
 
 </p>
+
 ![NASA Space Apps Challenge 2026](https://img.shields.io/badge/NASA%20Space%20Apps-2026%20Challenge-0B3D91?style=for-the-badge&logo=nasa&logoColor=white)
 ![Build Status](https://img.shields.io/badge/Test%20Suite-114%20Passed-success?style=for-the-badge&logo=pytest&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)
