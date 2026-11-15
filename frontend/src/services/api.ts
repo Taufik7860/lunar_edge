@@ -140,4 +140,24 @@ export const api = {
     });
     return handleResponse<ContinuityEnvelopeResult>(res);
   },
+
+  async discoverOpportunities(
+    req: {
+      mission_name: string;
+      target_region: string;
+      bounds?: { lat_min: number; lat_max: number; lon_min: number; lon_max: number };
+      start_utc: string;
+      duration_days: number;
+      step_minutes?: number;
+      requirements: MissionRequirements;
+      max_slope_deg?: number;
+    }
+  ): Promise<import('../types/api').OpportunityDiscoveryResponse> {
+    const res = await fetch(`${API_BASE}/discovery/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    return handleResponse<import('../types/api').OpportunityDiscoveryResponse>(res);
+  },
 };

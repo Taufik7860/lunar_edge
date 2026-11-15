@@ -257,3 +257,21 @@ def evaluate_continuity_envelope(req: ContinuityEnvelopeRequest):
     except Exception as e:
         logger.error("Continuity envelope evaluation failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/discovery/search")
+def discover_landing_opportunities(req: dict):
+    """
+    Autonomous Opportunity Discovery:
+    Evaluates south polar candidate landing regions across terrain, SPICE ephemerides,
+    and mission constraints. Returns spatial boundaries, rankings, and explainable recommendations.
+    """
+    from app.engines.discovery_engine import OpportunityDiscoveryEngine, OpportunityDiscoveryRequest
+    engine = get_mission_engine()
+    try:
+        parsed_req = OpportunityDiscoveryRequest(**req)
+        discovery_engine = OpportunityDiscoveryEngine(engine)
+        return discovery_engine.search_and_evaluate(parsed_req)
+    except Exception as e:
+        logger.error("Opportunity discovery failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))

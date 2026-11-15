@@ -194,3 +194,134 @@ export interface SystemHealth {
   dem_path: string;
   candidate_sites_count: number;
 }
+
+// ---------------------------------------------------------------------------
+// Workstation 5-Workspace & Extended Feature Types
+// ---------------------------------------------------------------------------
+
+export type WorkspaceId =
+  | 'explorer'
+  | 'discovery'
+  | 'intelligence'
+  | 'resilience'
+  | 'recovery';
+
+export type ScreeningStatus =
+  | 'Screening-viable'
+  | 'Conditional'
+  | 'Infeasible'
+  | 'Insufficient data'
+  | 'Outside coverage'
+  | 'SCREENING_VIABLE'; // backward compatibility
+
+export interface GeographicBounds {
+  lat_min: number;
+  lat_max: number;
+  lon_min: number;
+  lon_max: number;
+}
+
+export interface OpportunityDiscoveryRequest {
+  mission_name: string;
+  target_region: string;
+  bounds?: GeographicBounds;
+  start_utc: string;
+  duration_days: number;
+  step_minutes?: number;
+  requirements: MissionRequirements;
+  max_slope_deg?: number;
+}
+
+export interface CandidateExplainability {
+  why_this_location: string;
+  satisfied_requirements: string[];
+  unsatisfied_requirements: string[];
+  favourable_factors: string[];
+  unfavourable_factors: string[];
+  identified_risks: string[];
+}
+
+export interface DiscoveredCandidate {
+  key: string;
+  name: string;
+  latitude_deg: number;
+  longitude_deg: number;
+  elevation_m: number;
+  slope_deg: number;
+  aspect_deg: number;
+  boundary_polygon: number[][]; // [lat, lon][]
+  classification: 'Screening-viable' | 'Conditional' | 'Infeasible' | 'Insufficient data' | 'Outside coverage';
+  sunlight_percentage: number;
+  sunlit_hours: number;
+  longest_dark_period_hours: number;
+  longest_comms_window_hours: number;
+  longest_simultaneous_window_hours: number;
+  mean_horizon_deg: number;
+  composite_score: number;
+  data_coverage_status: string;
+  constraints_assessment: {
+    min_continuous_sunlight: boolean;
+    max_tolerable_darkness: boolean;
+    min_continuous_earth_comms: boolean;
+    max_terrain_slope: boolean;
+  };
+  explanation: CandidateExplainability;
+}
+
+export interface OpportunityDiscoveryResponse {
+  mission_name: string;
+  search_region: string;
+  start_utc: string;
+  duration_days: number;
+  total_evaluated: number;
+  viable_count: number;
+  conditional_count: number;
+  infeasible_count: number;
+  candidates: DiscoveredCandidate[];
+}
+
+export interface DiscoveryCandidate {
+  site_key: string;
+  site: LandingSite;
+  status: ScreeningStatus;
+  score: number; // 0 - 100
+  sunlight_hours: number;
+  sunlit_fraction: number;
+  longest_dark_hours: number;
+  earth_comm_hours: number;
+  simultaneous_hours: number;
+  elevation_m: number;
+  slope_deg: number;
+  key_advantages: string[];
+  risk_factors: string[];
+  provenance: string;
+}
+
+export type InterventionStatus =
+  | 'PROPOSED'
+  | 'ANALYTICALLY_EVALUATED'
+  | 'FULLY_RECALCULATED'
+  | 'VERIFIED';
+
+export interface RecoveryIntervention {
+  id: string;
+  title: string;
+  type: 'TEMPORAL_SHIFT' | 'SPATIAL_RELOCATION' | 'ASSET_UPGRADE' | 'ORBITAL_RELAY';
+  description: string;
+  status: InterventionStatus;
+  baseline_metric: string;
+  projected_metric: string;
+  improvement_delta: string;
+  residual_risk: string;
+  feasibility_score: number; // 0 - 100
+}
+
+export interface LayerSettings {
+  elevationHeatmap: boolean;
+  coordinateGrid: boolean;
+  candidateRegions: boolean;
+  sunDirectionVector: boolean;
+  earthDirectionVector: boolean;
+  dispersionFootprint: boolean;
+  highResSouthPoleMesh: boolean;
+}

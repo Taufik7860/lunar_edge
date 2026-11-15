@@ -5,9 +5,9 @@ import { ShieldCheck, AlertTriangle, Crosshair, Calendar, Sliders } from 'lucide
 
 interface ContinuityEnvelopeChartProps {
   envelope: ContinuityEnvelopeResult | null;
-  requirements: MissionRequirements;
-  onChangeRequirements: (reqs: MissionRequirements) => void;
-  onReevaluate: () => void;
+  requirements?: MissionRequirements;
+  onChangeRequirements?: (reqs: MissionRequirements) => void;
+  onReevaluate?: () => void;
   loading?: boolean;
 }
 
@@ -242,82 +242,84 @@ export const ContinuityEnvelopeChart: React.FC<ContinuityEnvelopeChartProps> = (
       </div>
 
       {/* Mission Requirements Threshold Adjuster */}
-      <div className="bg-space-950 border border-space-800 rounded p-2.5 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-mono text-slate-300 font-semibold uppercase flex items-center space-x-1.5">
-            <Sliders className="w-3.5 h-3.5 text-earth-400" />
-            <span>Mission Go / No-Go Constraints Thresholds</span>
-          </span>
-          <button
-            onClick={onReevaluate}
-            className="px-2.5 py-1 text-[11px] font-mono bg-earth-600/30 hover:bg-earth-600/50 text-earth-300 rounded border border-earth-500/40 transition"
-          >
-            Apply & Re-evaluate Envelope
-          </button>
+      {requirements && onChangeRequirements && onReevaluate && (
+        <div className="bg-space-950 border border-space-800 rounded p-2.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-mono text-slate-300 font-semibold uppercase flex items-center space-x-1.5">
+              <Sliders className="w-3.5 h-3.5 text-earth-400" />
+              <span>Mission Go / No-Go Constraints Thresholds</span>
+            </span>
+            <button
+              onClick={onReevaluate}
+              className="px-2.5 py-1 text-[11px] font-mono bg-earth-600/30 hover:bg-earth-600/50 text-earth-300 rounded border border-earth-500/40 transition"
+            >
+              Apply & Re-evaluate Envelope
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-0.5">Min Sunlight Window:</label>
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="number"
+                  value={requirements.min_continuous_sunlight_hours}
+                  onChange={(e) =>
+                    onChangeRequirements({ ...requirements, min_continuous_sunlight_hours: Number(e.target.value) })
+                  }
+                  className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-slate-200 text-xs"
+                />
+                <span className="text-slate-500 text-[11px]">hours</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-0.5">Max Tolerable Darkness:</label>
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="number"
+                  value={requirements.max_tolerable_dark_hours}
+                  onChange={(e) =>
+                    onChangeRequirements({ ...requirements, max_tolerable_dark_hours: Number(e.target.value) })
+                  }
+                  className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-rose-300 text-xs"
+                />
+                <span className="text-slate-500 text-[11px]">hours</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-0.5">Min Continuous Comms:</label>
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="number"
+                  value={requirements.min_continuous_earth_comms_hours}
+                  onChange={(e) =>
+                    onChangeRequirements({ ...requirements, min_continuous_earth_comms_hours: Number(e.target.value) })
+                  }
+                  className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-slate-200 text-xs"
+                />
+                <span className="text-slate-500 text-[11px]">hours</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-0.5">Min Simultaneous Ops:</label>
+              <div className="flex items-center space-x-1.5">
+                <input
+                  type="number"
+                  value={requirements.min_simultaneous_operating_hours}
+                  onChange={(e) =>
+                    onChangeRequirements({ ...requirements, min_simultaneous_operating_hours: Number(e.target.value) })
+                  }
+                  className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-emerald-300 text-xs"
+                />
+                <span className="text-slate-500 text-[11px]">hours</span>
+              </div>
+            </div>
+          </div>
         </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-0.5">Min Sunlight Window:</label>
-            <div className="flex items-center space-x-1.5">
-              <input
-                type="number"
-                value={requirements.min_continuous_sunlight_hours}
-                onChange={(e) =>
-                  onChangeRequirements({ ...requirements, min_continuous_sunlight_hours: Number(e.target.value) })
-                }
-                className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-slate-200 text-xs"
-              />
-              <span className="text-slate-500 text-[11px]">hours</span>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-0.5">Max Tolerable Darkness:</label>
-            <div className="flex items-center space-x-1.5">
-              <input
-                type="number"
-                value={requirements.max_tolerable_dark_hours}
-                onChange={(e) =>
-                  onChangeRequirements({ ...requirements, max_tolerable_dark_hours: Number(e.target.value) })
-                }
-                className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-rose-300 text-xs"
-              />
-              <span className="text-slate-500 text-[11px]">hours</span>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-0.5">Min Continuous Comms:</label>
-            <div className="flex items-center space-x-1.5">
-              <input
-                type="number"
-                value={requirements.min_continuous_earth_comms_hours}
-                onChange={(e) =>
-                  onChangeRequirements({ ...requirements, min_continuous_earth_comms_hours: Number(e.target.value) })
-                }
-                className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-slate-200 text-xs"
-              />
-              <span className="text-slate-500 text-[11px]">hours</span>
-            </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-0.5">Min Simultaneous Ops:</label>
-            <div className="flex items-center space-x-1.5">
-              <input
-                type="number"
-                value={requirements.min_simultaneous_operating_hours}
-                onChange={(e) =>
-                  onChangeRequirements({ ...requirements, min_simultaneous_operating_hours: Number(e.target.value) })
-                }
-                className="w-16 bg-space-900 border border-space-700 px-1.5 py-0.5 rounded text-emerald-300 text-xs"
-              />
-              <span className="text-slate-500 text-[11px]">hours</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* Dual Plots Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

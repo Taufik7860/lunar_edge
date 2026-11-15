@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
-import { Header } from './components/Header';
-import { SiteSelector } from './components/SiteSelector';
-import { LunarMapViewer } from './components/LunarMap/LunarMapViewer';
+import { TopBar } from './components/layout/TopBar';
+import { WorkflowStepper } from './components/layout/WorkflowStepper';
+import { SidebarNav } from './components/layout/SidebarNav';
+import { RightInspector } from './components/layout/RightInspector';
+import { TimelineDock } from './components/layout/TimelineDock';
+import { MissionExplorerWorkspace } from './components/workspaces/MissionExplorerWorkspace';
+import { OpportunityDiscoveryWorkspace } from './components/workspaces/OpportunityDiscoveryWorkspace';
+import { CandidateIntelligenceWorkspace } from './components/workspaces/CandidateIntelligenceWorkspace';
+import { MissionResilienceWorkspace } from './components/workspaces/MissionResilienceWorkspace';
+import { MissionRecoveryWorkspace } from './components/workspaces/MissionRecoveryWorkspace';
+import { MissionConfigModal } from './components/panels/MissionConfigModal';
 import { api } from './services/api';
 import {
   LandingSite,
@@ -10,36 +18,28 @@ import {
   ContinuityEnvelopeResult,
   MissionRequirements,
   SystemHealth,
+  EpochGeometry,
+  WorkspaceId,
+  LayerSettings,
+  GeographicBounds,
+  DiscoveredCandidate,
+  OpportunityDiscoveryResponse,
 } from './types/api';
 import { AlertTriangle, Compass } from 'lucide-react';
 
-// Lazy-loaded heavy visualization components for code-splitting
-const HorizonChart = lazy(() =>
-  import('./components/charts/HorizonChart').then((m) => ({ default: m.HorizonChart }))
-);
-const TimelineChart = lazy(() =>
-  import('./components/charts/TimelineChart').then((m) => ({ default: m.TimelineChart }))
-);
-const ContinuityEnvelopeChart = lazy(() =>
-  import('./components/charts/ContinuityEnvelopeChart').then((m) => ({ default: m.ContinuityEnvelopeChart }))
-);
-const SiteComparison = lazy(() =>
-  import('./components/panels/SiteComparison').then((m) => ({ default: m.SiteComparison }))
-);
-
-const ChartFallback = () => (
-  <div className="h-[400px] bg-space-900 border border-space-700 rounded-md flex items-center justify-center font-mono text-xs text-slate-400">
-    <div className="flex items-center space-x-2">
-      <div className="w-4 h-4 border-2 border-earth-400 border-t-transparent rounded-full animate-spin"></div>
-      <span>Loading scientific visualization module...</span>
-    </div>
-  </div>
-);
-
 export const App: React.FC = () => {
-  // Navigation & UTC Clock
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // Navigation & Active Workspace
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>('explorer');
   const [utcTime, setUtcTime] = useState(() => new Date().toISOString().slice(11, 19));
+
+  // Mission Configuration State
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+  const [missionName, setMissionName] = useState<string>('Artemis Polar Mission');
+  const [missionType, setMissionType] = useState<string>('Crewed Lander');
+  const [targetRegion, setTargetRegion] = useState<string>('south_pole_all');
+  const [bounds, setBounds] = useState<GeographicBounds | null>(null);
+  const [maxSlopeDeg, setMaxSlopeDeg] = useState<number>(10.0);
+  const [lastClickedCoord, setLastClickedCoord] = useState<{ lat: number; lon: number } | null>(null);
 
   // System & Sites state
   const [health, setHealth] = useState<SystemHealth | null>(null);
@@ -48,14 +48,14 @@ export const App: React.FC = () => {
   const [currentSite, setCurrentSite] = useState<LandingSite>({
     name: 'Peak Near Shackleton / Connecting Ridge',
     latitude_deg: -89.7,
-    longitude_deg: 129.0,
-    elevation_m: 1120.0,
+    longitude_deg: -129.0,
+    elevation_m: 1293.8,
     slope_deg: 5.0,
     aspect_deg: 130.0,
   });
 
   // Analysis Parameters
-  const [startUtc, setStartUtc] = useState<string>('2026-02-01T00:00:00Z');
+  const [startUtc, setStartUtc] = useState<string>('2026-07-01T00:00:00Z');
   const [durationDays, setDurationDays] = useState<number>(14);
   const [stepMinutes, setStepMinutes] = useState<number>(15);
   const [requirements, setRequirements] = useState<MissionRequirements>({
@@ -65,14 +65,41 @@ export const App: React.FC = () => {
     min_simultaneous_operating_hours: 24.0,
   });
 
+  // Opportunity Discovery Results State
+  const [discoveredCandidates, setDiscoveredCandidates] = useState<DiscoveredCandidate[]>([]);
+  const [discoveryResponse, setDiscoveryResponse] = useState<OpportunityDiscoveryResponse | null>(null);
+  const [isDiscovering, setIsDiscovering] = useState<boolean>(false);
+
   // Results State
   const [horizon, setHorizon] = useState<HorizonProfile | null>(null);
   const [visibility, setVisibility] = useState<VisibilityTimeSeriesResponse | null>(null);
   const [envelope, setEnvelope] = useState<ContinuityEnvelopeResult | null>(null);
+  const [epochGeometry, setEpochGeometry] = useState<EpochGeometry | null>(null);
 
-  // Status
+  // Timeline Scrubber State
+  const [currentSampleIndex, setCurrentSampleIndex] = useState<number>(0);
+
+  // Status & Progress
   const [loading, setLoading] = useState<boolean>(false);
+  const [isLoadingElevation, setIsLoadingElevation] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 3D Scientific Overlays Layer Settings
+  const [layers, setLayers] = useState<LayerSettings>({
+    elevationHeatmap: false,
+    coordinateGrid: true,
+    candidateRegions: true,
+    sunDirectionVector: true,
+    earthDirectionVector: true,
+    dispersionFootprint: false,
+    highResSouthPoleMesh: true,
+  });
+
+  const [highlightAzimuth, setHighlightAzimuth] = useState<number | null>(null);
+
+  const toggleLayer = (layer: keyof LayerSettings) => {
+    setLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
+  };
 
   // UTC clock ticker
   useEffect(() => {
@@ -82,7 +109,47 @@ export const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // Initial load of health and candidate sites
+  // Autonomous Opportunity Discovery Handler
+  const handleRunDiscovery = useCallback(async () => {
+    setIsDiscovering(true);
+    setError(null);
+    try {
+      const res = await api.discoverOpportunities({
+        mission_name: missionName,
+        target_region: targetRegion,
+        bounds: bounds || undefined,
+        start_utc: startUtc,
+        duration_days: durationDays,
+        step_minutes: 60.0,
+        requirements: requirements,
+        max_slope_deg: maxSlopeDeg,
+      });
+      setDiscoveryResponse(res);
+      setDiscoveredCandidates(res.candidates);
+      setIsConfigModalOpen(false);
+
+      // If candidates found and current site not in list, select top candidate
+      if (res.candidates.length > 0) {
+        const top = res.candidates[0];
+        setSelectedSiteKey(top.key);
+        setCurrentSite({
+          name: top.name,
+          latitude_deg: top.latitude_deg,
+          longitude_deg: top.longitude_deg,
+          elevation_m: top.elevation_m,
+          slope_deg: top.slope_deg,
+          aspect_deg: top.aspect_deg,
+        });
+      }
+    } catch (err: any) {
+      console.error('Opportunity discovery failed:', err);
+      setError(`Discovery Engine Alert: ${err.message || 'Calculation error'}`);
+    } finally {
+      setIsDiscovering(false);
+    }
+  }, [missionName, targetRegion, bounds, startUtc, durationDays, requirements, maxSlopeDeg]);
+
+  // Initial load of health, candidate sites, and initial discovery run
   useEffect(() => {
     async function initSystem() {
       try {
@@ -92,6 +159,8 @@ export const App: React.FC = () => {
         if (s['shackleton_connecting_ridge']) {
           setCurrentSite(s['shackleton_connecting_ridge']);
         }
+        // Run initial discovery sweep
+        handleRunDiscovery();
       } catch (err: any) {
         console.error('Failed to initialize system:', err);
         setError(`Backend Connection Standby: ${err.message || 'Cannot reach API'}`);
@@ -100,249 +169,258 @@ export const App: React.FC = () => {
     initSystem();
   }, []);
 
-  // Run Mission Analysis
-  const runAnalysis = useCallback(async () => {
+  // Run Mission Analysis when site or epoch changes
+  const runAnalysis = useCallback(async (siteToEvaluate: LandingSite, epochStr: string) => {
     setLoading(true);
     setError(null);
     try {
-      // Step 1: Compute local terrain horizon & mission visibility timeline
+      // 1. Fetch live epoch geometry
+      const geom = await api.getEpochGeometry(siteToEvaluate, epochStr);
+      setEpochGeometry(geom);
+
+      // 2. Compute local terrain horizon & mission visibility timeline
       const [hRes, vRes] = await Promise.all([
-        api.getHorizon(currentSite, 20.0, 360),
-        api.evaluateVisibility(currentSite, startUtc, durationDays, stepMinutes, 20.0),
+        api.getHorizon(siteToEvaluate, 20.0, 360),
+        api.evaluateVisibility(siteToEvaluate, epochStr, durationDays, stepMinutes, 20.0),
       ]);
       setHorizon(hRes);
       setVisibility(vRes);
+      setCurrentSampleIndex(0);
 
-      // Step 2: Compute Mission Continuity Envelope sensitivity
-      const eRes = await api.evaluateContinuityEnvelope(currentSite, startUtc, durationDays, 30.0, requirements);
+      // 3. Compute Mission Continuity Envelope sensitivity
+      const eRes = await api.evaluateContinuityEnvelope(siteToEvaluate, epochStr, durationDays, 30.0, requirements);
       setEnvelope(eRes);
     } catch (err: any) {
       console.error('Analysis execution failed:', err);
-      setError(`Calculation Notice: ${err.message || 'Engine computation failed'}`);
+      setError(`Scientific Analysis Alert: ${err.message || 'Unknown processing error'}`);
     } finally {
       setLoading(false);
     }
-  }, [currentSite, startUtc, durationDays, stepMinutes, requirements]);
+  }, [durationDays, stepMinutes, requirements]);
 
-  // Run on initial site readiness
+  // Trigger analysis on site or startUtc changes
   useEffect(() => {
-    if (Object.keys(sites).length > 0) {
-      runAnalysis();
+    if (currentSite) {
+      runAnalysis(currentSite, startUtc);
     }
-  }, [sites]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentSite, startUtc, runAnalysis]);
 
-  // Handle preset site change
-  const handleSelectSiteKey = async (key: string) => {
+  // Handle Candidate Selection from 3D Globe, List, or Strip
+  const handleSelectSite = (key: string) => {
     setSelectedSiteKey(key);
-    if (key === 'custom') return;
-
-    const site = sites[key];
-    if (site) {
-      setCurrentSite(site);
-      try {
-        const elevData = await api.getElevation(site.latitude_deg, site.longitude_deg);
-        setCurrentSite((prev) => ({
-          ...prev,
-          elevation_m: elevData.elevation_m,
-        }));
-      } catch {
-        // Fallback to configured elevation
-      }
+    // First check discovered candidates
+    const foundDiscovered = discoveredCandidates.find((c) => c.key === key);
+    if (foundDiscovered) {
+      setCurrentSite({
+        name: foundDiscovered.name,
+        latitude_deg: foundDiscovered.latitude_deg,
+        longitude_deg: foundDiscovered.longitude_deg,
+        elevation_m: foundDiscovered.elevation_m,
+        slope_deg: foundDiscovered.slope_deg,
+        aspect_deg: foundDiscovered.aspect_deg,
+      });
+      return;
+    }
+    if (sites[key]) {
+      setCurrentSite(sites[key]);
     }
   };
 
-  // Handle map click for custom coordinates
+  // Handle Click on 3D Moon Surface to Query Live LOLA DEM Elevation
   const handleCoordinatesClick = async (lat: number, lon: number) => {
-    setSelectedSiteKey('custom');
-    let elev = 0;
+    setIsLoadingElevation(true);
+    setLastClickedCoord({ lat, lon });
     try {
-      const elevData = await api.getElevation(lat, lon);
-      elev = elevData.elevation_m;
-    } catch {
-      elev = 0;
+      const res = await api.getElevation(lat, lon);
+      const customSite: LandingSite = {
+        name: `Custom Location (${lat.toFixed(2)}°S, ${lon.toFixed(2)}°E)`,
+        latitude_deg: lat,
+        longitude_deg: lon,
+        elevation_m: res.elevation_m,
+        slope_deg: 3.0,
+        aspect_deg: 0.0,
+      };
+      setSelectedSiteKey('custom');
+      setCurrentSite(customSite);
+    } catch (err: any) {
+      console.warn('Failed to query DEM elevation at clicked point:', err);
+    } finally {
+      setIsLoadingElevation(false);
     }
-
-    setCurrentSite({
-      name: `Custom Location (${lat.toFixed(2)}°, ${lon.toFixed(2)}°)`,
-      latitude_deg: lat,
-      longitude_deg: lon,
-      elevation_m: elev,
-      slope_deg: 0.0,
-      aspect_deg: 0.0,
-    });
-  };
-
-  // Benchmark single site for comparison tab
-  const handleEvaluateSiteForComparison = async (siteKey: string) => {
-    const site = sites[siteKey];
-    if (!site) throw new Error('Site not found');
-
-    const [v, c] = await Promise.all([
-      api.evaluateVisibility(site, startUtc, durationDays, 30.0, 15.0),
-      api.evaluateContinuityEnvelope(site, startUtc, durationDays, 60.0, requirements),
-    ]);
-    return { visibility: v, continuity: c };
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-space-950 font-sans">
-      {/* Aerospace Console Header */}
-      <Header
+    <div className="flex flex-col w-screen h-screen bg-obsidian-950 text-slate-100 overflow-hidden font-sans">
+      {/* 1. Global Aerospace Top Bar */}
+      <TopBar
         health={health}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
         utcTime={utcTime}
+        startUtc={startUtc}
+        onChangeStartUtc={setStartUtc}
+        activeScenarioName={missionName.toUpperCase()}
+        onOpenConfigModal={() => setIsConfigModalOpen(true)}
       />
 
-      {/* Error / Warning Alert Banner */}
-      {error && (
-        <div className="bg-rose-950/80 border-b border-rose-500/50 px-4 py-1.5 flex items-center justify-between text-xs font-mono text-rose-200">
-          <div className="flex items-center space-x-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400" />
-            <span>{error}</span>
-          </div>
-          <button
-            onClick={() => setError(null)}
-            className="text-rose-400 hover:text-rose-200 underline text-[11px]"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
+      {/* 1b. Mission Workflow Stepper Pipeline */}
+      <WorkflowStepper
+        activeWorkspace={activeWorkspace}
+        onSelectWorkspace={setActiveWorkspace}
+        onOpenConfigModal={() => setIsConfigModalOpen(true)}
+        hasRunDiscovery={discoveredCandidates.length > 0}
+      />
 
-      {/* Main Workspace Body */}
-      <main className="flex-1 overflow-y-auto p-3.5 space-y-3.5">
-        {/* Mission Target & Epoch Configuration Header Bar */}
-        <SiteSelector
-          sites={sites}
-          selectedSiteKey={selectedSiteKey}
-          onSelectSiteKey={handleSelectSiteKey}
-          currentSite={currentSite}
-          onChangeSite={setCurrentSite}
-          startUtc={startUtc}
-          onChangeStartUtc={setStartUtc}
-          durationDays={durationDays}
-          onChangeDurationDays={setDurationDays}
-          stepMinutes={stepMinutes}
-          onChangeStepMinutes={setStepMinutes}
-          onRecalculate={runAnalysis}
-          loading={loading}
+      {/* Main Workstation Body: Sidebar + Central Viewport + Right Inspector */}
+      <div className="flex-1 flex w-full overflow-hidden relative">
+        {/* 2. Workspace Navigation Sidebar */}
+        <SidebarNav
+          activeWorkspace={activeWorkspace}
+          onSelectWorkspace={setActiveWorkspace}
+          candidateCount={discoveredCandidates.length > 0 ? discoveredCandidates.length : Object.keys(sites).length}
         />
 
-        {/* Tab 1: Operations Console (Primary Dashboard) */}
-        {activeTab === 'dashboard' && (
-          <div className="space-y-3.5">
-            {/* Top Row: Map + Horizon Profile */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
-              <div className="lg:col-span-4">
-                <LunarMapViewer
-                  sites={sites}
-                  selectedSiteKey={selectedSiteKey}
-                  onSelectSite={handleSelectSiteKey}
-                  currentSite={currentSite}
-                  onCoordinatesClick={handleCoordinatesClick}
-                />
-              </div>
-              <div className="lg:col-span-8">
-                <Suspense fallback={<ChartFallback />}>
-                  <HorizonChart
-                    horizon={horizon}
-                    samples={visibility ? visibility.samples : []}
-                    loading={loading}
-                  />
-                </Suspense>
-              </div>
+        {/* 3. Central Dynamic Workspace Canvas */}
+        <main className="flex-1 flex flex-col relative overflow-hidden bg-obsidian-950">
+          {/* Global Loading / Status Overlay */}
+          {(loading || isDiscovering) && (
+            <div className="absolute top-4 right-4 z-30 bg-graphite-900/90 border border-cyan-500/40 rounded-full px-3 py-1 flex items-center space-x-2 text-xs font-mono text-cyan-300 shadow-cyan-glow backdrop-blur-md">
+              <div className="w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              <span>{isDiscovering ? 'DISCOVERING LANDING OPPORTUNITIES...' : 'UPDATING SCIENTIFIC TELEMETRY...'}</span>
             </div>
+          )}
 
-            {/* Bottom Row: Mission Visibility Timeline */}
-            <Suspense fallback={<ChartFallback />}>
-              <TimelineChart data={visibility} loading={loading} />
-            </Suspense>
+          {error && (
+            <div className="absolute top-4 left-4 z-30 bg-red-950/90 border border-red-500/50 rounded px-3 py-2 text-xs font-mono text-red-300 shadow-xl flex items-center space-x-2 backdrop-blur-md">
+              <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
 
-            {/* Quick Envelope Summary Strip */}
-            {envelope && (
-              <div className="bg-space-900 border border-space-700 rounded-md p-3 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-                <div className="flex items-center space-x-3">
-                  <span className="text-slate-400 uppercase text-[11px]">Mission Continuity Status:</span>
-                  <span
-                    className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-                      envelope.baseline_meets_requirements
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                        : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                    }`}
-                  >
-                    {envelope.baseline_meets_requirements ? 'REQUIREMENTS SATISFIED' : 'CONSTRAINTS VIOLATED'}
-                  </span>
-                  <span className="text-slate-500">|</span>
-                  <span className="text-slate-300">
-                    Composite Robustness Score: <strong>{(envelope.overall_robustness_score * 100).toFixed(1)}%</strong>
-                  </span>
-                </div>
-                <button
-                  onClick={() => setActiveTab('continuity')}
-                  className="px-2.5 py-1 rounded bg-space-800 hover:bg-space-700 text-slate-200 text-[11px] border border-space-600 transition"
-                >
-                  View Sensitivity Details →
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Tab 2: Detailed Terrain Horizon Analysis */}
-        {activeTab === 'horizon' && (
-          <div className="space-y-3.5">
-            <Suspense fallback={<ChartFallback />}>
-              <HorizonChart
-                horizon={horizon}
-                samples={visibility ? visibility.samples : []}
-                loading={loading}
+          {/* Active Workspace Viewport Switcher */}
+          <div className="flex-1 w-full h-full relative overflow-hidden">
+            {activeWorkspace === 'explorer' && (
+              <MissionExplorerWorkspace
+                sites={sites}
+                selectedSiteKey={selectedSiteKey}
+                onSelectSite={handleSelectSite}
+                currentSite={currentSite}
+                onCoordinatesClick={handleCoordinatesClick}
+                layers={layers}
+                onToggleLayer={toggleLayer}
+                highlightAzimuth={highlightAzimuth}
+                discoveredCandidates={discoveredCandidates}
               />
-            </Suspense>
-          </div>
-        )}
+            )}
 
-        {/* Tab 3: Detailed Visibility Timeline */}
-        {activeTab === 'timeline' && (
-          <div className="space-y-3.5">
-            <Suspense fallback={<ChartFallback />}>
-              <TimelineChart data={visibility} loading={loading} />
-            </Suspense>
-          </div>
-        )}
+            {activeWorkspace === 'discovery' && (
+              <OpportunityDiscoveryWorkspace
+                sites={sites}
+                selectedSiteKey={selectedSiteKey}
+                onSelectSite={handleSelectSite}
+                onNavigateToCandidate={(key) => {
+                  handleSelectSite(key);
+                  setActiveWorkspace('intelligence');
+                }}
+                onNavigateToExplorer={() => setActiveWorkspace('explorer')}
+                onOpenConfigModal={() => setIsConfigModalOpen(true)}
+                startUtc={startUtc}
+                durationDays={durationDays}
+                requirements={requirements}
+                maxSlopeDeg={maxSlopeDeg}
+                missionName={missionName}
+                targetRegion={targetRegion}
+                discoveredCandidates={discoveredCandidates}
+                discoveryResponse={discoveryResponse}
+                isDiscovering={isDiscovering}
+                onRunDiscovery={handleRunDiscovery}
+              />
+            )}
 
-        {/* Tab 4: Mission Continuity Envelope */}
-        {activeTab === 'continuity' && (
-          <div className="space-y-3.5">
-            <Suspense fallback={<ChartFallback />}>
-              <ContinuityEnvelopeChart
+            {activeWorkspace === 'intelligence' && (
+              <CandidateIntelligenceWorkspace
+                site={currentSite}
+                selectedSiteKey={selectedSiteKey}
+                onSelectSite={handleSelectSite}
+                horizon={horizon}
+                visibility={visibility}
+                epochGeometry={epochGeometry}
+                requirements={requirements}
+                discoveredCandidates={discoveredCandidates}
+                onHighlightAzimuth={setHighlightAzimuth}
+                onNavigateToRecovery={() => setActiveWorkspace('recovery')}
+              />
+            )}
+
+            {activeWorkspace === 'resilience' && (
+              <MissionResilienceWorkspace
+                site={currentSite}
                 envelope={envelope}
                 requirements={requirements}
                 onChangeRequirements={setRequirements}
-                onReevaluate={runAnalysis}
-                loading={loading}
+                onReevaluate={() => runAnalysis(currentSite, startUtc)}
               />
-            </Suspense>
-          </div>
-        )}
+            )}
 
-        {/* Tab 5: Artemis Candidate Sites Comparison */}
-        {activeTab === 'comparison' && (
-          <div className="space-y-3.5">
-            <Suspense fallback={<ChartFallback />}>
-              <SiteComparison
-                sites={sites}
-                onSelectSite={(key) => {
-                  handleSelectSiteKey(key);
-                  setActiveTab('dashboard');
-                }}
-                onEvaluateSite={handleEvaluateSiteForComparison}
+            {activeWorkspace === 'recovery' && (
+              <MissionRecoveryWorkspace
+                site={currentSite}
+                visibility={visibility}
+                requirements={requirements}
               />
-            </Suspense>
+            )}
           </div>
-        )}
-      </main>
+
+          {/* 4. Bottom Operational Timeline Dock */}
+          <TimelineDock
+            visibility={visibility}
+            discoveredCandidates={discoveredCandidates}
+            selectedSiteKey={selectedSiteKey}
+            onSelectSite={handleSelectSite}
+            onProceedToAnalysis={() => setActiveWorkspace('intelligence')}
+            currentSite={currentSite}
+          />
+        </main>
+
+        {/* 5. Right Context-Sensitive Inspector */}
+        <RightInspector
+          site={currentSite}
+          epochGeometry={epochGeometry}
+          visibility={visibility}
+          horizon={horizon}
+          requirements={requirements}
+          onUpdateRequirements={setRequirements}
+          isLoadingElevation={isLoadingElevation}
+          discoveredCandidate={discoveredCandidates.find((c) => c.key === selectedSiteKey) || null}
+          onViewDetailedAnalysis={() => setActiveWorkspace('intelligence')}
+        />
+      </div>
+
+      {/* 6. Mission Configuration & Discovery Modal */}
+      <MissionConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        missionName={missionName}
+        onChangeMissionName={setMissionName}
+        missionType={missionType}
+        onChangeMissionType={setMissionType}
+        targetRegion={targetRegion}
+        onChangeTargetRegion={setTargetRegion}
+        bounds={bounds}
+        onChangeBounds={setBounds}
+        startUtc={startUtc}
+        onChangeStartUtc={setStartUtc}
+        durationDays={durationDays}
+        onChangeDurationDays={setDurationDays}
+        requirements={requirements}
+        onChangeRequirements={setRequirements}
+        maxSlopeDeg={maxSlopeDeg}
+        onChangeMaxSlopeDeg={setMaxSlopeDeg}
+        onRunDiscovery={handleRunDiscovery}
+        isDiscovering={isDiscovering}
+        lastClickedCoord={lastClickedCoord}
+      />
     </div>
   );
 };
+
 export default App;
+
